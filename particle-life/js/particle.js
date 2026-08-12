@@ -5,6 +5,8 @@ export class Particle {
   constructor(x, y, type) {
     this.x = x;
     this.y = y;
+    this.prevX = x;
+    this.prevY = y;
     this.vx = 0;
     this.vy = 0;
     this.type = type;

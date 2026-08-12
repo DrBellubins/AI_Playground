@@ -54,6 +54,12 @@ export class Simulation {
     this.fpsTime = 0;
     this.fps = 0;
 
+    // Trail canvas — separate layer for world-space trails
+    this.trailCanvas = document.createElement('canvas');
+    this.trailCanvas.id = 'trail';
+    this.canvas.parentElement.appendChild(this.trailCanvas);
+    this.trailCtx = this.trailCanvas.getContext('2d');
+
     this.resize();
     this.initParticles();
     this.bindCamera();
@@ -68,6 +74,11 @@ export class Simulation {
     this.canvas.width = this.w * dpr;
     this.canvas.height = this.h * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // Resize trail canvas to match
+    this.trailCanvas.width = this.w * dpr;
+    this.trailCanvas.height = this.h * dpr;
+    this.trailCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this.ctx.clearRect(0, 0, this.w, this.h);
   }
@@ -271,16 +282,12 @@ export class Simulation {
     const zoom = this.zoom;
     const viewX = this.viewX;
     const viewY = this.viewY;
+    const trailCtx = this.trailCtx;
+    const dpr = window.devicePixelRatio || 1;
 
-    // --- Trail effect: partial clear on main canvas ---
-    if (trail > 0) {
-      const alpha = Math.max(0.02, 1 - trail / 32);
-      ctx.fillStyle = this.bgColor + Math.round(alpha * 255).toString(16).padStart(2, '0');
-      ctx.fillRect(0, 0, this.w, this.h);
-    } else {
-      ctx.fillStyle = this.bgColor;
-      ctx.fillRect(0, 0, this.w, this.h);
-    }
+    // --- Main canvas: solid background + particles ---
+    ctx.fillStyle = this.bgColor;
+    ctx.fillRect(0, 0, this.w, this.h);
 
     // --- Draw particles with camera transform ---
     ctx.save();
@@ -308,6 +315,39 @@ export class Simulation {
     }
     ctx.restore();
 
+    // --- Trail canvas: fade old trails + draw new trail lines ---
+    if (trail > 0) {
+      // Fade old trails using destination-out (removes alpha from trail canvas)
+      const alpha = Math.max(0.02, 1 - trail / 32);
+      trailCtx.globalCompositeOperation = 'destination-out';
+      trailCtx.fillStyle = `rgba(0,0,0,${alpha})`;
+      trailCtx.fillRect(0, 0, this.w, this.h);
+      trailCtx.globalCompositeOperation = 'source-over';
+
+      // Draw trail lines in world-space (with camera transform)
+      trailCtx.save();
+      trailCtx.translate(-viewX, -viewY);
+      trailCtx.scale(zoom, zoom);
+
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        const t = this.types[p.type];
+        if (!t) continue;
+
+        trailCtx.beginPath();
+        trailCtx.moveTo(p.prevX, p.prevY);
+        trailCtx.lineTo(p.x, p.y);
+        trailCtx.strokeStyle = t.color;
+        trailCtx.lineWidth = Math.max(0.5, t.size * 0.5);
+        trailCtx.lineCap = 'round';
+        trailCtx.stroke();
+      }
+      trailCtx.restore();
+    } else {
+      // Clear trail canvas when trail is disabled
+      trailCtx.clearRect(0, 0, this.w * dpr, this.h * dpr);
+    }
+
     // Draw spatial grid overlay (screen-space, fixed line width)
     if (this.showGrid) {
       ctx.save();
@@ -327,6 +367,13 @@ export class Simulation {
         ctx.stroke();
       }
       ctx.restore();
+    }
+
+    // Update previous positions for next frame's trail lines
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      p.prevX = p.x;
+      p.prevY = p.y;
     }
   }
 
