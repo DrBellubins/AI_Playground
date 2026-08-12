@@ -20,7 +20,7 @@ export class Simulation {
     this.interactionRadius = 80;
     this.maxSpeed = 1.5;
     this.damping = 0.96;
-    this.seed = 42;
+    this.seed = Math.floor(Math.random() * 99999);
     this.trail = 30;
     this.bgColor = '#050508';
     this.showVectors = false;
