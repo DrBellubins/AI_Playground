@@ -25,6 +25,7 @@ export class Simulation {
     this.showVectors = false;
     this.showGrid = false;
     this.wrap = false;
+    this.maxFps = 165;
 
     // Camera (zoom + pan)
     this.viewX = 0;
@@ -377,6 +378,14 @@ export class Simulation {
 
   /* ---- Main loop ---- */
   loop(timestamp) {
+    const minInterval = 1000 / this.maxFps;
+    const elapsed = timestamp - (this.lastFrameTime || 0);
+    if (elapsed < minInterval) {
+      requestAnimationFrame((t) => this.loop(t));
+      return;
+    }
+    this.lastFrameTime = timestamp;
+
     requestAnimationFrame((t) => this.loop(t));
 
     // FPS
@@ -425,6 +434,7 @@ export class Simulation {
       showGrid: this.showGrid,
       types: this.types.map(t => ({ ...t })),
       matrix: this.matrix.map(r => [...r]),
+      maxFps: this.maxFps,
     };
   }
 
@@ -438,6 +448,7 @@ export class Simulation {
     if (cfg.bgColor !== undefined) this.bgColor = cfg.bgColor;
     if (cfg.showVectors !== undefined) this.showVectors = cfg.showVectors;
     if (cfg.showGrid !== undefined) this.showGrid = cfg.showGrid;
+    if (cfg.maxFps !== undefined) this.maxFps = +cfg.maxFps;
     if (cfg.types) this.types = cfg.types;
     if (cfg.matrix) this.matrix = cfg.matrix;
 
