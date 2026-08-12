@@ -8,6 +8,10 @@
  *   random   → saw wave pluck
  *
  * No sound effect exceeds 500 ms.
+ *
+ * Limits:
+ *   - Max 32 simultaneous sounds globally
+ *   - 2 second cooldown per particle before it can trigger again
  */
 export class SoundEngine {
   /**
@@ -20,25 +24,20 @@ export class SoundEngine {
     this.ctx = null;
     this.initialized = false;
 
-    // Track active swirl interactions for continuous wobble
-    this.swirlWobbles = new Map(); // key: "i,j" → { osc, gain, freq }
+    // --- Global sound limits ---
+    this.maxActiveSounds = 32;
+    this.activeSoundCount = 0;
 
-    // Cooldowns to avoid overlapping plucks
-    this.cooldowns = {
-      cluster: new Map(), // typePair → endTime
-      galaxy: new Map(),
-      random: new Map(),
-    };
+    // --- Per-particle cooldown ---
+    this.particleCooldowns = new Map(); // particleIndex → endTime (ms)
+    this.particleCooldownMs = 2000;
 
-    // Debounce for swirl wobble — only trigger if interaction persists
+    // --- Swirl wobbles (continuous) ---
+    this.swirlWobbles = new Map(); // key: "i,j" → { osc, gain }
     this.swirlDebounces = new Map(); // key: "i,j" → timeoutId
     this.swirlDebounceMs = 80;
 
-    // Max simultaneous plucks per type
-    this.maxPlucks = { cluster: 4, galaxy: 4, random: 4 };
-    this.activePlucks = { cluster: 0, galaxy: 0, random: 0 };
-
-    // Ensure cleanup on page unload
+    // --- Cleanup on page unload ---
     window.addEventListener('beforeunload', () => this.dispose());
   }
 
@@ -60,10 +59,41 @@ export class SoundEngine {
       this.ctx = null;
     }
     this.swirlWobbles.clear();
-    for (const key of Object.keys(this.cooldowns)) {
-      this.cooldowns[key].clear();
-      this.activePlucks[key] = 0;
+    this.swirlDebounces.clear();
+    this.particleCooldowns.clear();
+    this.activeSoundCount = 0;
+  }
+
+  /** Check if a particle is on cooldown. */
+  _isOnCooldown(particleIndex) {
+    const endTime = this.particleCooldowns.get(particleIndex);
+    if (endTime && endTime > performance.now()) {
+      return true;
     }
+    // Clean up expired entries
+    if (endTime) {
+      this.particleCooldowns.delete(particleIndex);
+    }
+    return false;
+  }
+
+  /** Set cooldown for a particle. */
+  _setCooldown(particleIndex) {
+    this.particleCooldowns.set(particleIndex, performance.now() + this.particleCooldownMs);
+  }
+
+  /** Try to claim a sound slot. Returns true if successful. */
+  _claimSoundSlot() {
+    if (this.activeSoundCount >= this.maxActiveSounds) {
+      return false;
+    }
+    this.activeSoundCount++;
+    return true;
+  }
+
+  /** Release a sound slot. */
+  _releaseSoundSlot() {
+    this.activeSoundCount = Math.max(0, this.activeSoundCount - 1);
   }
 
   /* ---- Public update called each frame ---- */
@@ -86,9 +116,9 @@ export class SoundEngine {
     const radius = sim.interactionRadius;
     const numTypes = sim.numTypes;
 
-    // Collect all active interactions this frame
-    const activeInteractions = new Set(); // "i,j"
-    const interactionTypes = new Map();   // "i,j" → { typeA, typeB, strength }
+    // Collect all active interactions this frame, tracking which particles are involved
+    const activeInteractions = new Set(); // "i,j" (type-pair key)
+    const interactionByParticle = new Map(); // particleIndex → [{ typeA, typeB, strength, neighborIdx }]
 
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
@@ -121,41 +151,60 @@ export class SoundEngine {
         const key = `${a},${b}`;
         activeInteractions.add(key);
 
+        // Track interaction per particle for cooldown
         const dNorm = 1 - d / radius;
-        const cur = interactionTypes.get(key);
-        if (!cur || Math.abs(strength * dNorm) > Math.abs(cur.strength * dNorm)) {
-          interactionTypes.set(key, { typeA: a, typeB: b, strength });
+        if (!interactionByParticle.has(i)) {
+          interactionByParticle.set(i, []);
         }
+        interactionByParticle.get(i).push({ typeA: a, typeB: b, strength: strength * dNorm, neighborIdx: q._index });
       }
     }
 
     // --- Process swirl interactions → continuous sine wobble ---
-    this._processSwirl(interactionTypes, activeInteractions);
+    this._processSwirl(interactionByParticle, activeInteractions);
 
-    // --- Process non-swirl interactions → pluck sounds ---
-    this._processPlucks(interactionTypes, activeInteractions);
+    // --- Process non-swirl interactions → pluck sounds (per-particle) ---
+    this._processPlucks(interactionByParticle);
   }
 
   /**
    * Swirl: continuous sine wobble whose pitch tracks interaction strength.
-   * Debounced to avoid flicker.
+   * Debounced to avoid flicker. Limited by global sound count.
    */
-  _processSwirl(interactionTypes, activeInteractions) {
+  _processSwirl(interactionByParticle, activeInteractions) {
+    // Gather all swirl-like type-pairs from active interactions
+    const swirlPairs = new Map(); // "i,j" → { typeA, typeB, strength }
+    for (const [particleIdx, interactions] of interactionByParticle) {
+      for (const info of interactions) {
+        const mat = this.sim.matrix;
+        const sA = mat[info.typeA]?.[info.typeB] ?? 0;
+        const sB = mat[info.typeB]?.[info.typeA] ?? 0;
+
+        if (!this._isSwirlLike(sA, sB)) continue;
+
+        const key = `${info.typeA},${info.typeB}`;
+        if (!swirlPairs.has(key)) {
+          swirlPairs.set(key, info);
+        } else {
+          // Keep strongest interaction for this pair
+          const cur = swirlPairs.get(key);
+          if (Math.abs(info.strength) > Math.abs(cur.strength)) {
+            swirlPairs.set(key, info);
+          }
+        }
+      }
+    }
+
     // Start wobbles for newly active swirl interactions
-    for (const [key, info] of interactionTypes) {
-      const mat = this.sim.matrix;
-      const sA = mat[info.typeA]?.[info.typeB] ?? 0;
-      const sB = mat[info.typeB]?.[info.typeA] ?? 0;
-
-      // Swirl preset has characteristic rotational forces
-      if (!this._isSwirlLike(sA, sB)) continue;
-
-      // Debounce: wait a few frames before starting
+    for (const [key, info] of swirlPairs) {
       if (!activeInteractions.has(key)) continue;
 
       if (!this.swirlWobbles.has(key)) {
         // Check debounce
         if (this.swirlDebounces.has(key)) continue;
+
+        // Check global sound limit
+        if (!this._claimSoundSlot()) continue;
 
         const timeout = setTimeout(() => {
           this.swirlDebounces.delete(key);
@@ -185,13 +234,9 @@ export class SoundEngine {
 
   /**
    * Determine if a pair of interaction strengths looks like swirl behavior.
-   * Swirl has alternating positive/negative rotational forces.
    */
   _isSwirlLike(a, b) {
-    // Swirl matrix has values like 1.5, -0.5, -1.5, 0.5
-    // Check if both values are non-zero and at least one is in the swirl range
     if (Math.abs(a) < 0.1 && Math.abs(b) < 0.1) return false;
-    // Swirl has characteristic alternating signs
     const swirlRange = (v) => Math.abs(v) >= 0.3 && Math.abs(v) <= 2.0;
     return swirlRange(a) || swirlRange(b);
   }
@@ -211,7 +256,7 @@ export class SoundEngine {
     gain.connect(ctx.destination);
     osc.start();
 
-    this.swirlWobbles.set(key, { osc, gain, freq: 120 });
+    this.swirlWobbles.set(key, { osc, gain });
     this._updateSwirlWobble(key, info);
   }
 
@@ -220,7 +265,6 @@ export class SoundEngine {
     if (!entry) return;
 
     const strength = info.strength;
-    // Map strength to frequency: stronger interaction = higher wobble
     const baseFreq = 80;
     const maxFreq = 400;
     const freq = baseFreq + Math.abs(strength) * (maxFreq - baseFreq);
@@ -242,38 +286,50 @@ export class SoundEngine {
       gain.disconnect();
     }, 50);
     this.swirlWobbles.delete(key);
+    this._releaseSoundSlot();
   }
 
   /**
    * Pluck sounds for non-swirl interactions.
    * Clusters → white noise, Galaxy → square, Random → saw
+   * Per-particle with cooldown and global limit.
    */
-  _processPlucks(interactionTypes, activeInteractions) {
-    for (const [key, info] of interactionTypes) {
-      if (!activeInteractions.has(key)) continue;
+  _processPlucks(interactionByParticle) {
+    for (const [particleIdx, interactions] of interactionByParticle) {
+      // Check per-particle cooldown
+      if (this._isOnCooldown(particleIdx)) continue;
 
-      const mat = this.sim.matrix;
-      const sA = mat[info.typeA]?.[info.typeB] ?? 0;
-      const sB = mat[info.typeB]?.[info.typeA] ?? 0;
+      // Find the strongest non-swirl interaction for this particle
+      let bestInteraction = null;
+      let bestBehavior = null;
 
-      // Determine which behavior this pair belongs to
-      let behavior = null;
-      if (this._isClusterLike(sA, sB)) behavior = 'cluster';
-      else if (this._isGalaxyLike(sA, sB)) behavior = 'galaxy';
-      else if (this._isRandomLike(sA, sB)) behavior = 'random';
+      for (const info of interactions) {
+        const mat = this.sim.matrix;
+        const sA = mat[info.typeA]?.[info.typeB] ?? 0;
+        const sB = mat[info.typeB]?.[info.typeA] ?? 0;
 
-      if (!behavior) continue;
+        let behavior = null;
+        if (this._isClusterLike(sA, sB)) behavior = 'cluster';
+        else if (this._isGalaxyLike(sA, sB)) behavior = 'galaxy';
+        else if (this._isRandomLike(sA, sB)) behavior = 'random';
 
-      // Check cooldown
-      const cooldown = this.cooldowns[behavior];
-      if (cooldown.has(key) && cooldown.get(key) > performance.now()) continue;
+        if (!behavior) continue;
 
-      // Check max plucks
-      if (this.activePlucks[behavior] >= this.maxPlucks[behavior]) continue;
+        // Pick the strongest interaction
+        if (!bestInteraction || Math.abs(info.strength) > Math.abs(bestInteraction.strength)) {
+          bestInteraction = info;
+          bestBehavior = behavior;
+        }
+      }
 
-      // Trigger pluck
-      this._triggerPluck(behavior, info);
-      cooldown.set(key, performance.now() + 200); // 200ms cooldown between same pair
+      if (!bestInteraction || !bestBehavior) continue;
+
+      // Check global sound limit
+      if (!this._claimSoundSlot()) continue;
+
+      // Trigger pluck and set cooldown
+      this._setCooldown(particleIdx);
+      this._triggerPluck(bestBehavior, bestInteraction, particleIdx);
     }
   }
 
@@ -289,15 +345,12 @@ export class SoundEngine {
 
   /** Random: arbitrary values, generally smaller magnitude */
   _isRandomLike(a, b) {
-    // If it's not cluster or galaxy-like, and has some force, treat as random
     return Math.abs(a) > 0.2 || Math.abs(b) > 0.2;
   }
 
   /** Trigger a pluck sound of the given behavior type */
-  _triggerPluck(behavior, info) {
+  _triggerPluck(behavior, info, particleIdx) {
     if (!this.ctx) return;
-    this.activePlucks[behavior]++;
-
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const duration = Math.min(0.5, 0.15 + Math.abs(info.strength) * 0.1);
@@ -310,9 +363,9 @@ export class SoundEngine {
       this._playSawPluck(ctx, now, duration, info);
     }
 
-    // Decrement counter after sound ends
+    // Release sound slot after sound ends
     setTimeout(() => {
-      this.activePlucks[behavior] = Math.max(0, this.activePlucks[behavior] - 1);
+      this._releaseSoundSlot();
     }, duration * 1000);
   }
 

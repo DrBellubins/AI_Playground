@@ -183,7 +183,7 @@ export class Simulation {
         const y = this.rng() * this.h;
         const angle = this.rng() * Math.PI * 2;
         const speed = this.rng() * 0.5;
-        const p = new Particle(x, y, t);
+        const p = new Particle(x, y, t, this.particles.length);
         p.vx = Math.cos(angle) * speed;
         p.vy = Math.sin(angle) * speed;
         this.particles.push(p);
@@ -198,7 +198,7 @@ export class Simulation {
     if (this.totalParticles > current) {
       for (let i = 0; i < this.totalParticles - current; i++) {
         const t = Math.floor(this.rng() * this.types.length);
-        const p = new Particle(this.rng() * this.w, this.rng() * this.h, t);
+        const p = new Particle(this.rng() * this.w, this.rng() * this.h, t, this.particles.length);
         const angle = this.rng() * Math.PI * 2;
         const speed = this.rng() * 0.5;
         p.vx = Math.cos(angle) * speed;
