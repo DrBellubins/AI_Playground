@@ -273,10 +273,10 @@ export class Simulation {
       p.x += p.vx;
       p.y += p.vy;
 
-      if (p.x < 0) { p.x = 0; p.vx *= -1; }
-      else if (p.x >= this.w) { p.x = this.w - 1; p.vx *= -1; }
-      if (p.y < 0) { p.y = 0; p.vy *= -1; }
-      else if (p.y >= this.h) { p.y = this.h - 1; p.vy *= -1; }
+      if (p.x < 0) p.x += this.w;
+      else if (p.x >= this.w) p.x -= this.w;
+      if (p.y < 0) p.y += this.h;
+      else if (p.y >= this.h) p.y -= this.h;
     }
   }
 
