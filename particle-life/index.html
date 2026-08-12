@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Particle Life Simulation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- Canvas area -->
+  <div id="canvas-wrap">
+    <canvas id="sim"></canvas>
+    <div id="overlay-info">
+      <div id="fps-display">FPS: --</div>
+      <div id="count-display">Particles: --</div>
+      <div id="zoom-display">Zoom: 1.0x</div>
+    </div>
+  </div>
+
+  <!-- Toggle button for narrow screens -->
+  <button id="panel-toggle" title="Toggle controls">☰</button>
+
+  <!-- Control panel -->
+  <aside id="controls">
+
+    <!-- ====== 1. SIMULATION CONTROLS ====== -->
+    <div class="section">
+      <div class="section-title">Simulation</div>
+      <div class="btn-row">
+        <button id="btn-play" class="primary">⏸ Pause</button>
+        <button id="btn-reset">↺ Reset</button>
+        <button id="btn-random-seed">🎲 Randomize</button>
+      </div>
+      <div class="slider-row">
+        <label>Particles</label>
+        <input type="range" id="s-total" min="100" max="5000" step="100" value="1200">
+        <span class="val" id="v-total">1200</span>
+      </div>
+      <div class="slider-row">
+        <label>Radius</label>
+        <input type="range" id="s-radius" min="20" max="200" step="1" value="80">
+        <span class="val" id="v-radius">80</span>
+      </div>
+      <div class="slider-row">
+        <label>Max Speed</label>
+        <input type="range" id="s-speed" min="0.1" max="5.0" step="0.1" value="1.5">
+        <span class="val" id="v-speed">1.5</span>
+      </div>
+      <div class="slider-row">
+        <label>Damping</label>
+        <input type="range" id="s-damping" min="0.900" max="0.999" step="0.001" value="0.960">
+        <span class="val" id="v-damping">0.960</span>
+      </div>
+      <div class="slider-row">
+        <label>Seed</label>
+        <input type="range" id="s-seed" min="0" max="99999" step="1" value="42">
+        <span class="val" id="v-seed">42</span>
+      </div>
+    </div>
+
+    <!-- ====== 2. PARTICLE TYPES ====== -->
+    <div class="section">
+      <div class="section-title">Particle Types</div>
+      <div id="type-list"></div>
+    </div>
+
+    <!-- ====== 3. INTERACTION MATRIX ====== -->
+    <div class="section">
+      <div class="section-title">Interaction Matrix</div>
+      <div class="btn-row">
+        <button data-preset="swirl">🌀 Swirl</button>
+        <button data-preset="clusters">🧱 Clusters</button>
+        <button data-preset="chaos">🎲 Chaos</button>
+        <button data-preset="galaxy">🌌 Galaxy</button>
+        <button data-preset="random">🔀 Random</button>
+      </div>
+      <div class="matrix-wrap">
+        <table class="matrix-table" id="matrix-table"></table>
+      </div>
+      <div class="btn-row">
+        <button id="btn-copy-matrix">📋 Copy JSON</button>
+      </div>
+    </div>
+
+    <!-- ====== 4. VISUALS ====== -->
+    <div class="section">
+      <div class="section-title">Visuals</div>
+      <div class="slider-row">
+        <label>Trail</label>
+        <input type="range" id="s-trail" min="0" max="30" step="1" value="8">
+        <span class="val" id="v-trail">8</span>
+      </div>
+      <div class="color-row">
+        <label>Background</label>
+        <input type="color" id="c-bg" value="#050508">
+      </div>
+      <label class="check-row">
+        <input type="checkbox" id="c-vectors"> Show velocity vectors
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="c-grid"> Show spatial grid
+      </label>
+    </div>
+
+    <!-- ====== 5. EXPORT / IMPORT ====== -->
+    <div class="section">
+      <div class="section-title">Export / Import</div>
+      <div class="btn-row">
+        <button id="btn-export">⬇ Export JSON</button>
+        <button id="btn-save-preset">💾 Save Preset</button>
+      </div>
+      <div class="slider-row">
+        <label style="min-width:auto">Preset name</label>
+        <input type="text" id="preset-name" class="type-name-input" style="flex:1" placeholder="My preset">
+      </div>
+      <textarea id="import-area" placeholder="Paste JSON here or use Import button below..."></textarea>
+      <div class="btn-row">
+        <button id="btn-import">⬆ Import JSON</button>
+        <button id="btn-load-file">📂 Load File</button>
+      </div>
+      <div id="saved-presets" class="btn-row"></div>
+    </div>
+
+  </aside>
+</div>
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" accept=".json" style="display:none">
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
