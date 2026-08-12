@@ -11,7 +11,8 @@
  *
  * Limits:
  *   - Max 32 simultaneous sounds globally
- *   - 2 second cooldown per particle before it can trigger again
+ *   - 2 second cooldown per particle based on zone entry events
+ *     (not sound playback events)
  */
 export class SoundEngine {
   /**
@@ -28,14 +29,18 @@ export class SoundEngine {
     this.maxActiveSounds = 32;
     this.activeSoundCount = 0;
 
-    // --- Per-particle cooldown ---
-    this.particleCooldowns = new Map(); // particleIndex → endTime (ms)
-    this.particleCooldownMs = 2000;
+    // --- Zone-entry cooldown ---
+    // Tracks when particles last ENTERED an interaction zone (first appeared in neighbor list)
+    this.zoneEntryCooldowns = new Map(); // particleIndex → endTime (ms)
+    this.zoneEntryCooldownMs = 2000;
 
     // --- Swirl wobbles (continuous) ---
     this.swirlWobbles = new Map(); // key: "i,j" → { osc, gain }
     this.swirlDebounces = new Map(); // key: "i,j" → timeoutId
     this.swirlDebounceMs = 80;
+
+    // --- Previous frame tracking for zone-entry detection ---
+    this.prevInteractingParticles = new Set(); // particle indices that were interacting last frame
 
     // --- Cleanup on page unload ---
     window.addEventListener('beforeunload', () => this.dispose());
@@ -60,26 +65,27 @@ export class SoundEngine {
     }
     this.swirlWobbles.clear();
     this.swirlDebounces.clear();
-    this.particleCooldowns.clear();
+    this.zoneEntryCooldowns.clear();
+    this.prevInteractingParticles.clear();
     this.activeSoundCount = 0;
   }
 
-  /** Check if a particle is on cooldown. */
-  _isOnCooldown(particleIndex) {
-    const endTime = this.particleCooldowns.get(particleIndex);
+  /** Check if a particle is on zone-entry cooldown. */
+  _isOnZoneCooldown(particleIndex) {
+    const endTime = this.zoneEntryCooldowns.get(particleIndex);
     if (endTime && endTime > performance.now()) {
       return true;
     }
     // Clean up expired entries
     if (endTime) {
-      this.particleCooldowns.delete(particleIndex);
+      this.zoneEntryCooldowns.delete(particleIndex);
     }
     return false;
   }
 
-  /** Set cooldown for a particle. */
-  _setCooldown(particleIndex) {
-    this.particleCooldowns.set(particleIndex, performance.now() + this.particleCooldownMs);
+  /** Set zone-entry cooldown for a particle. */
+  _setZoneCooldown(particleIndex) {
+    this.zoneEntryCooldowns.set(particleIndex, performance.now() + this.zoneEntryCooldownMs);
   }
 
   /** Try to claim a sound slot. Returns true if successful. */
@@ -116,9 +122,10 @@ export class SoundEngine {
     const radius = sim.interactionRadius;
     const numTypes = sim.numTypes;
 
-    // Collect all active interactions this frame, tracking which particles are involved
-    const activeInteractions = new Set(); // "i,j" (type-pair key)
-    const interactionByParticle = new Map(); // particleIndex → [{ typeA, typeB, strength, neighborIdx }]
+    // --- Detect zone entries and exits ---
+    const currentInteracting = new Set(); // particle indices currently interacting
+    const newlyEntering = new Set();      // particles that just entered an interaction zone
+    const interactionByParticle = new Map(); // particleIndex → [{ typeA, typeB, strength }]
 
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
@@ -149,29 +156,44 @@ export class SoundEngine {
         const a = Math.min(p.type, q.type);
         const b = Math.max(p.type, q.type);
         const key = `${a},${b}`;
-        activeInteractions.add(key);
 
-        // Track interaction per particle for cooldown
+        // Track interaction per particle
         const dNorm = 1 - d / radius;
         if (!interactionByParticle.has(i)) {
           interactionByParticle.set(i, []);
         }
-        interactionByParticle.get(i).push({ typeA: a, typeB: b, strength: strength * dNorm, neighborIdx: q._index });
+        interactionByParticle.get(i).push({ typeA: a, typeB: b, strength: strength * dNorm });
+      }
+    }
+
+    // Determine which particles are currently interacting
+    for (const [particleIdx] of interactionByParticle) {
+      currentInteracting.add(particleIdx);
+    }
+
+    // Detect zone entries: particles interacting now but not last frame
+    for (const idx of currentInteracting) {
+      if (!this.prevInteractingParticles.has(idx)) {
+        newlyEntering.add(idx);
       }
     }
 
     // --- Process swirl interactions → continuous sine wobble ---
-    this._processSwirl(interactionByParticle, activeInteractions);
+    this._processSwirl(interactionByParticle, currentInteracting);
 
-    // --- Process non-swirl interactions → pluck sounds (per-particle) ---
-    this._processPlucks(interactionByParticle);
+    // --- Process non-swirl interactions → pluck sounds ---
+    // Only trigger sounds for particles that just entered a zone AND are past cooldown
+    this._processPlacks(interactionByParticle, newlyEntering);
+
+    // Update previous frame tracking
+    this.prevInteractingParticles = currentInteracting;
   }
 
   /**
    * Swirl: continuous sine wobble whose pitch tracks interaction strength.
    * Debounced to avoid flicker. Limited by global sound count.
    */
-  _processSwirl(interactionByParticle, activeInteractions) {
+  _processSwirl(interactionByParticle, currentInteracting) {
     // Gather all swirl-like type-pairs from active interactions
     const swirlPairs = new Map(); // "i,j" → { typeA, typeB, strength }
     for (const [particleIdx, interactions] of interactionByParticle) {
@@ -197,7 +219,7 @@ export class SoundEngine {
 
     // Start wobbles for newly active swirl interactions
     for (const [key, info] of swirlPairs) {
-      if (!activeInteractions.has(key)) continue;
+      if (!currentInteracting.has(key)) continue;
 
       if (!this.swirlWobbles.has(key)) {
         // Check debounce
@@ -219,14 +241,14 @@ export class SoundEngine {
 
     // Stop wobbles that are no longer active
     for (const [key] of this.swirlWobbles) {
-      if (!activeInteractions.has(key)) {
+      if (!currentInteracting.has(key)) {
         this._stopSwirlWobble(key);
       }
     }
 
     // Clean up debounce timers
     for (const [key, tid] of this.swirlDebounces) {
-      if (activeInteractions.has(key)) continue;
+      if (currentInteracting.has(key)) continue;
       clearTimeout(tid);
       this.swirlDebounces.delete(key);
     }
@@ -292,12 +314,15 @@ export class SoundEngine {
   /**
    * Pluck sounds for non-swirl interactions.
    * Clusters → white noise, Galaxy → square, Random → saw
-   * Per-particle with cooldown and global limit.
+   * Only triggered when particles ENTER an interaction zone, not while staying.
    */
-  _processPlucks(interactionByParticle) {
-    for (const [particleIdx, interactions] of interactionByParticle) {
-      // Check per-particle cooldown
-      if (this._isOnCooldown(particleIdx)) continue;
+  _processPlacks(interactionByParticle, newlyEntering) {
+    for (const particleIdx of newlyEntering) {
+      const interactions = interactionByParticle.get(particleIdx);
+      if (!interactions) continue;
+
+      // Check zone-entry cooldown
+      if (this._isOnZoneCooldown(particleIdx)) continue;
 
       // Find the strongest non-swirl interaction for this particle
       let bestInteraction = null;
@@ -327,9 +352,9 @@ export class SoundEngine {
       // Check global sound limit
       if (!this._claimSoundSlot()) continue;
 
-      // Trigger pluck and set cooldown
-      this._setCooldown(particleIdx);
-      this._triggerPluck(bestBehavior, bestInteraction, particleIdx);
+      // Set zone-entry cooldown and trigger pluck
+      this._setZoneCooldown(particleIdx);
+      this._triggerPluck(bestBehavior, bestInteraction);
     }
   }
 
@@ -349,7 +374,7 @@ export class SoundEngine {
   }
 
   /** Trigger a pluck sound of the given behavior type */
-  _triggerPluck(behavior, info, particleIdx) {
+  _triggerPluck(behavior, info) {
     if (!this.ctx) return;
     const ctx = this.ctx;
     const now = ctx.currentTime;

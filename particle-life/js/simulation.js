@@ -29,7 +29,7 @@ export class Simulation {
     this.maxFps = 165;
 
     // Sound
-    this.soundEnabled = false;
+    this.soundEnabled = true;
 
     // Camera (zoom + pan)
     this.viewX = 0;
