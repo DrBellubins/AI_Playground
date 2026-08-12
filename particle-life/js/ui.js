@@ -24,6 +24,20 @@ export class UIController {
       document.getElementById('btn-play').textContent = this.sim.running ? '⏸ Pause' : '▶ Play';
     });
 
+    // Sound toggle
+    document.getElementById('btn-sound').addEventListener('click', () => {
+      this.sim.soundEnabled = !this.sim.soundEnabled;
+      const btn = document.getElementById('btn-sound');
+      if (this.sim.soundEnabled) {
+        this.sim.sound.enable();
+        btn.textContent = '🔊 Sound';
+        btn.classList.add('active');
+      } else {
+        btn.textContent = '🔇 Sound';
+        btn.classList.remove('active');
+      }
+    });
+
     // Reset
     document.getElementById('btn-reset').addEventListener('click', () => {
       this.sim.initParticles();
@@ -338,6 +352,18 @@ export class UIController {
 
     this.syncTypeListDOM();
     this.buildMatrix();
+
+    // Sound button state
+    const soundBtn = document.getElementById('btn-sound');
+    if (soundBtn) {
+      if (this.sim.soundEnabled) {
+        soundBtn.textContent = '🔊 Sound';
+        soundBtn.classList.add('active');
+      } else {
+        soundBtn.textContent = '🔇 Sound';
+        soundBtn.classList.remove('active');
+      }
+    }
   }
 
   updateStats() {

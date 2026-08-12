@@ -2,6 +2,7 @@ import { mulberry32 } from './prng.js';
 import { Particle } from './particle.js';
 import { SpatialGrid } from './spatial-grid.js';
 import { DEFAULT_TYPES, PRESETS } from './constants.js';
+import { SoundEngine } from './sound.js';
 
 /**
  * Simulation — main loop, physics, and rendering.
@@ -26,6 +27,9 @@ export class Simulation {
     this.showGrid = false;
     this.wrap = false;
     this.maxFps = 165;
+
+    // Sound
+    this.soundEnabled = false;
 
     // Camera (zoom + pan)
     this.viewX = 0;
@@ -61,6 +65,9 @@ export class Simulation {
     // this canvas through the camera transform.
     this.worldCanvas = document.createElement('canvas');
     this.worldCtx = this.worldCanvas.getContext('2d');
+
+    // Sound engine for interaction feedback
+    this.sound = new SoundEngine(this);
 
     this.resize();
     this.initParticles();
@@ -374,6 +381,9 @@ export class Simulation {
       p.prevX = p.x;
       p.prevY = p.y;
     }
+
+    // Update sound engine
+    this.sound.update();
   }
 
   /* ---- Main loop ---- */
@@ -435,6 +445,7 @@ export class Simulation {
       types: this.types.map(t => ({ ...t })),
       matrix: this.matrix.map(r => [...r]),
       maxFps: this.maxFps,
+      soundEnabled: this.soundEnabled ?? false,
     };
   }
 
@@ -451,6 +462,13 @@ export class Simulation {
     if (cfg.maxFps !== undefined) this.maxFps = +cfg.maxFps;
     if (cfg.types) this.types = cfg.types;
     if (cfg.matrix) this.matrix = cfg.matrix;
+    if (cfg.soundEnabled !== undefined) {
+      this.soundEnabled = cfg.soundEnabled;
+      if (this.soundEnabled && globalThis.ui) {
+        const soundBtn = document.getElementById('btn-sound');
+        if (soundBtn) soundBtn.classList.add('active');
+      }
+    }
 
     const n = this.types.length;
     while (this.matrix.length < n) this.matrix.push(new Array(n).fill(0));
