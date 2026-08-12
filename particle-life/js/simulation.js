@@ -6,7 +6,8 @@ import { DEFAULT_TYPES, PRESETS } from './constants.js';
 /**
  * Simulation — main loop, physics, and rendering.
  * Manages particles, camera (zoom/pan), fixed-timestep integration,
- * and renders trails via partial canvas clearing with camera transforms.
+ * and renders everything to a world-space canvas that the camera
+ * zooms/pan around.
  */
 export class Simulation {
   constructor(canvas) {
@@ -54,38 +55,36 @@ export class Simulation {
     this.fpsTime = 0;
     this.fps = 0;
 
-    // Trail canvas — separate layer for world-space trails
-    this.trailCanvas = document.createElement('canvas');
-    this.trailCanvas.id = 'trail';
-    this.canvas.parentElement.appendChild(this.trailCanvas);
-    this.trailCtx = this.trailCanvas.getContext('2d');
-
-    // Track camera state to detect movement (zoom/pan should NOT draw trails)
-    this._camZoom = this.zoom;
-    this._camViewX = this.viewX;
-    this._camViewY = this.viewY;
+    // World canvas — offscreen canvas at viewport size that holds
+    // particles + trails in world coordinates. The main canvas draws
+    // this canvas through the camera transform.
+    this.worldCanvas = document.createElement('canvas');
+    this.worldCtx = this.worldCanvas.getContext('2d');
 
     this.resize();
     this.initParticles();
     this.bindCamera();
   }
 
-  /** Resize canvas to match container. */
+  /** Resize canvases to match container. */
   resize() {
     const wrap = this.canvas.parentElement;
     const dpr = window.devicePixelRatio || 1;
     this.w = wrap.clientWidth;
     this.h = wrap.clientHeight;
+
     this.canvas.width = this.w * dpr;
     this.canvas.height = this.h * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Resize trail canvas to match
-    this.trailCanvas.width = this.w * dpr;
-    this.trailCanvas.height = this.h * dpr;
-    this.trailCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // World canvas — same logical size as viewport
+    this.worldCanvas.width = this.w * dpr;
+    this.worldCanvas.height = this.h * dpr;
+    this.worldCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+    // Clear both canvases on resize (trails rebuild naturally)
     this.ctx.clearRect(0, 0, this.w, this.h);
+    this.worldCtx.clearRect(0, 0, this.w, this.h);
   }
 
   /* ---- Camera (zoom + pan) ---- */
@@ -283,85 +282,71 @@ export class Simulation {
   /* ---- Render ---- */
   render() {
     const ctx = this.ctx;
+    const worldCtx = this.worldCtx;
     const trail = this.trail;
     const zoom = this.zoom;
     const viewX = this.viewX;
     const viewY = this.viewY;
-    const trailCtx = this.trailCtx;
-    const dpr = window.devicePixelRatio || 1;
 
-    // --- Main canvas: solid background + particles ---
-    ctx.fillStyle = this.bgColor;
-    ctx.fillRect(0, 0, this.w, this.h);
+    if (trail > 0) {
+      // Fade everything on world canvas via destination-out (gradually removes old trails)
+      const alpha = Math.max(0.02, 1 - trail / 32);
+      worldCtx.globalCompositeOperation = 'destination-out';
+      worldCtx.fillStyle = `rgba(0,0,0,${alpha})`;
+      worldCtx.fillRect(0, 0, this.w, this.h);
+      worldCtx.globalCompositeOperation = 'source-over';
 
-    // --- Draw particles with camera transform ---
-    ctx.save();
-    ctx.translate(-viewX, -viewY);
-    ctx.scale(zoom, zoom);
+      // Draw new trail lines in world space
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        const t = this.types[p.type];
+        if (!t) continue;
 
+        worldCtx.beginPath();
+        worldCtx.moveTo(p.prevX, p.prevY);
+        worldCtx.lineTo(p.x, p.y);
+        worldCtx.strokeStyle = t.color;
+        worldCtx.lineWidth = t.size;
+        worldCtx.lineCap = 'round';
+        worldCtx.stroke();
+      }
+    } else {
+      // No trails: clear world canvas so old trail content doesn't linger
+      worldCtx.clearRect(0, 0, this.w, this.h);
+    }
+
+    // Draw particles on top of trails (world space)
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
       const t = this.types[p.type];
       if (!t) continue;
 
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, t.size, 0, Math.PI * 2);
-      ctx.fillStyle = t.color;
-      ctx.fill();
+      worldCtx.beginPath();
+      worldCtx.arc(p.x, p.y, t.size, 0, Math.PI * 2);
+      worldCtx.fillStyle = t.color;
+      worldCtx.fill();
 
       if (this.showVectors) {
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p.x + p.vx * 8, p.y + p.vy * 8);
-        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
+        worldCtx.beginPath();
+        worldCtx.moveTo(p.x, p.y);
+        worldCtx.lineTo(p.x + p.vx * 8, p.y + p.vy * 8);
+        worldCtx.strokeStyle = 'rgba(255,255,255,0.25)';
+        worldCtx.lineWidth = 0.5;
+        worldCtx.stroke();
       }
     }
+
+    // --- Main canvas: solid background + world canvas through camera transform ---
+    ctx.fillStyle = this.bgColor;
+    ctx.fillRect(0, 0, this.w, this.h);
+
+    ctx.save();
+    ctx.translate(-viewX * zoom, -viewY * zoom);
+    ctx.scale(zoom, zoom);
+    ctx.drawImage(this.worldCanvas, 0, 0);
     ctx.restore();
 
-    // --- Trail canvas: fade old trails + draw new trail lines ---
-    if (trail > 0) {
-      // Check if camera moved this frame — if so, skip trail drawing entirely
-      // (particles aren't moving, only the camera is — trails should persist)
-      const camMoved = zoom !== this._camZoom || viewX !== this._camViewX || viewY !== this._camViewY;
-
-      if (!camMoved) {
-        // Fade old trails using destination-out (removes alpha from trail canvas)
-        const alpha = Math.max(0.02, 1 - trail / 32);
-        trailCtx.globalCompositeOperation = 'destination-out';
-        trailCtx.fillStyle = `rgba(0,0,0,${alpha})`;
-        trailCtx.fillRect(0, 0, this.w, this.h);
-        trailCtx.globalCompositeOperation = 'source-over';
-
-        // Draw trail lines in world-space (with camera transform)
-        trailCtx.save();
-        trailCtx.translate(-viewX, -viewY);
-        trailCtx.scale(zoom, zoom);
-
-        for (let i = 0; i < this.particles.length; i++) {
-          const p = this.particles[i];
-          const t = this.types[p.type];
-          if (!t) continue;
-
-          trailCtx.beginPath();
-          trailCtx.moveTo(p.prevX, p.prevY);
-          trailCtx.lineTo(p.x, p.y);
-          trailCtx.strokeStyle = t.color;
-          trailCtx.lineWidth = t.size;
-          trailCtx.lineCap = 'round';
-          trailCtx.stroke();
-        }
-        trailCtx.restore();
-      }
-    } else {
-      // Clear trail canvas when trail is disabled
-      trailCtx.clearRect(0, 0, this.w * dpr, this.h * dpr);
-    }
-
-
-
-    // Draw spatial grid overlay (screen-space, fixed line width)
+    // Draw spatial grid in screen space (fixed line width, doesn't scale with zoom)
     if (this.showGrid) {
       ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.04)';
@@ -388,11 +373,6 @@ export class Simulation {
       p.prevX = p.x;
       p.prevY = p.y;
     }
-
-    // Save camera state after rendering (so next frame detects movement)
-    this._camZoom = zoom;
-    this._camViewX = viewX;
-    this._camViewY = viewY;
   }
 
   /* ---- Main loop ---- */
@@ -451,8 +431,8 @@ export class Simulation {
   importConfig(cfg) {
     if (cfg.totalParticles !== undefined) this.totalParticles = cfg.totalParticles;
     if (cfg.interactionRadius !== undefined) this.interactionRadius = cfg.interactionRadius;
-    if (cfg.maxSpeed !== undefined) this.maxSpeed = cfg.maxSpeed;
-    if (cfg.damping !== undefined) this.damping = cfg.damping;
+    if (cfg.maxSpeed !== undefined) this.maxSpeed = +cfg.maxSpeed;
+    if (cfg.damping !== undefined) this.damping = +cfg.damping;
     if (cfg.seed !== undefined) this.seed = cfg.seed;
     if (cfg.trail !== undefined) this.trail = cfg.trail;
     if (cfg.bgColor !== undefined) this.bgColor = cfg.bgColor;
