@@ -20,7 +20,7 @@ export class Simulation {
     this.maxSpeed = 1.5;
     this.damping = 0.96;
     this.seed = 42;
-    this.trail = 8;
+    this.trail = 30;
     this.bgColor = '#050508';
     this.showVectors = false;
     this.showGrid = false;
@@ -102,7 +102,7 @@ export class Simulation {
       const wy = my / this.zoom + this.viewY;
 
       const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-      this.zoom = Math.max(1, Math.min(this.maxZoom, this.zoom * factor));
+      this.zoom = Math.max(0.5, Math.min(this.maxZoom, this.zoom * factor));
 
       this.viewX = wx - mx / this.zoom;
       this.viewY = wy - my / this.zoom;
