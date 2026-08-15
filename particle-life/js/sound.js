@@ -129,11 +129,11 @@ export class SoundEngine {
 
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
-      const neighbors = grid.getNeighbors(p, radius);
 
-      for (let j = 0; j < neighbors.length; j++) {
-        const q = neighbors[j];
-        if (q.type >= numTypes) continue;
+      // Zero-allocation neighbor scan (same visit order as before)
+      grid.forEachNeighbor(i, p, radius, (qi) => {
+        const q = particles[qi];
+        if (q.type >= numTypes) return;
 
         let dx = q.x - p.x;
         let dy = q.y - p.y;
@@ -146,24 +146,25 @@ export class SoundEngine {
         }
 
         const dSq = dx * dx + dy * dy;
-        if (dSq >= radius * radius || dSq < 0.01) continue;
+        if (dSq >= radius * radius || dSq < 0.01) return;
 
         const d = Math.sqrt(dSq);
         const strength = matrix[p.type]?.[q.type] ?? 0;
-        if (strength === 0) continue;
+        if (strength === 0) return;
 
         // Normalize key so (A,B) and (B,A) are the same
         const a = Math.min(p.type, q.type);
         const b = Math.max(p.type, q.type);
-        const key = `${a},${b}`;
 
         // Track interaction per particle
         const dNorm = 1 - d / radius;
-        if (!interactionByParticle.has(i)) {
-          interactionByParticle.set(i, []);
+        let list = interactionByParticle.get(i);
+        if (!list) {
+          list = [];
+          interactionByParticle.set(i, list);
         }
-        interactionByParticle.get(i).push({ typeA: a, typeB: b, strength: strength * dNorm });
-      }
+        list.push({ typeA: a, typeB: b, strength: strength * dNorm });
+      });
     }
 
     // Determine which particles are currently interacting
