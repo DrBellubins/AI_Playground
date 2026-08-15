@@ -50,9 +50,8 @@ export class Simulation {
     this.feedRate = 0.06;      // energy gained per second per unit of attraction
     this.reproNeighbors = 3;   // min neighbors within radius to reproduce
     this.reproEnergy = 0.8;    // min energy to split
+    this.maxParticles = 5000;  // population cap
     this.reproCooldown = 5;    // seconds before a particle can split again
-    // NOTE: population is hard-capped at this.totalParticles (the "Particles"
-    // slider), not a separate value — see lifeStep().
     this.births = 0;
     this.deaths = 0;
     this.deathFx = [];
@@ -415,11 +414,7 @@ export class Simulation {
    *    Stefanec, A-Life Lab Graz): when a particle has enough neighbors
    *    within the interaction radius and enough energy, it splits — the
    *    child spawns between the parent and its neighbor centroid and the
-   *    two share the parent's energy 50/50.
-   *
-   *    The live population is HARD-CAPPED at this.totalParticles (the
-   *    "Particles" slider). Reproduction only fills slots left open by
-   *    deaths, so the count hovers at the set value instead of ballooning.
+   *    two share the parent's energy 50/50. Population is capped.
    */
   lifeStep(dt, nCount, feed, contact) {
     const particles = this.particles;
@@ -455,10 +450,8 @@ export class Simulation {
 
     this.particles = survivors;
 
-    // Splits — hard-capped at the "Particles" count. Reproduction is only
-    // permitted when deaths have opened slots, so the population never
-    // exceeds totalParticles.
-    let budget = this.totalParticles - survivors.length;
+    // Splits — limited by the population cap
+    let budget = this.maxParticles - survivors.length;
     if (budget > 0) {
       for (let c = 0; c < candidates.length && budget > 0; c++) {
         if (this.spawnChild(candidates[c])) {
@@ -803,6 +796,7 @@ export class Simulation {
         feedRate: this.feedRate,
         reproNeighbors: this.reproNeighbors,
         reproEnergy: this.reproEnergy,
+        maxParticles: this.maxParticles,
         reproCooldown: this.reproCooldown,
       },
     };
@@ -829,6 +823,7 @@ export class Simulation {
       if (cfg.life.feedRate !== undefined) this.feedRate = +cfg.life.feedRate;
       if (cfg.life.reproNeighbors !== undefined) this.reproNeighbors = +cfg.life.reproNeighbors;
       if (cfg.life.reproEnergy !== undefined) this.reproEnergy = +cfg.life.reproEnergy;
+      if (cfg.life.maxParticles !== undefined) this.maxParticles = +cfg.life.maxParticles;
       if (cfg.life.reproCooldown !== undefined) this.reproCooldown = +cfg.life.reproCooldown;
     }
     if (cfg.types) this.types = cfg.types;
