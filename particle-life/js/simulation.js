@@ -44,7 +44,7 @@ export class Simulation {
     this.maxFps = 165;
 
     // Life cycle (reproduction & death) — see lifeStep()
-    this.lifeEnabled = true;
+    this.lifeEnabled = false;
     this.energyDecay = 0.03;   // energy lost per second (metabolism)
     this.collisionCost = 0.1;  // energy lost per second at full contact
     this.feedRate = 0.06;      // energy gained per second per unit of attraction
