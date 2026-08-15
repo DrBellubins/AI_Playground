@@ -3,6 +3,12 @@ import { Particle } from './particle.js';
 import { SpatialGrid } from './spatial-grid.js';
 import { DEFAULT_TYPES, PRESETS } from './constants.js';
 import { SoundEngine } from './sound.js';
+import { WebGPUEngine } from './gpu/webgpu-engine.js';
+
+// Layout of a particle in the GPU storage buffer (must match webgpu-engine.js).
+const PARTICLE_FLOATS = 12; // x,y,prevX,prevY,vx,vy,type,energy,age,reproCooldown,alive,id
+const P_X = 0, P_Y = 1, P_PX = 2, P_PY = 3, P_VX = 4, P_VY = 5,
+      P_TYPE = 6, P_ENERGY = 7, P_AGE = 8, P_COOLDOWN = 9, P_ALIVE = 10, P_ID = 11;
 
 /**
  * Convert a hex color string to {r,g,b} (0-255). Falls back to white
@@ -25,7 +31,13 @@ function hexToRgb(hex) {
 export class Simulation {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
+    // Rendering backend: WebGPU (preferred) or Canvas 2D fallback. The main
+    // canvas can only host ONE context type, so we defer choosing it until the
+    // (async) WebGPU init resolves — see _initContext(). Until then the loop
+    // no-ops (guarded by _contextReady).
+    this.gpu = null;
+    this.ctx = null;
+    this._contextReady = false;
 
     // Config
     this.totalParticles = 1200;
@@ -112,6 +124,15 @@ export class Simulation {
     this.resize();
     this.initParticles();
     this.bindCamera();
+
+    // Death-tracking state for the GPU readback path (see _applyReadback).
+    this._prevAlive = new Set();
+    this._mirrorParticles = new Map();
+    this._lastReadback = null;
+    this._readbackReady = false;
+
+    // Decide the rendering backend (async). The loop draws once this is set.
+    this._initContext();
   }
 
   /** Resize canvases to match container. */
@@ -121,6 +142,17 @@ export class Simulation {
     this.w = wrap.clientWidth;
     this.h = wrap.clientHeight;
 
+    if (this.gpu) {
+      // WebGPU: size the canvas backing store and rebuild GPU trail textures.
+      this.canvas.width = this.w * dpr;
+      this.canvas.height = this.h * dpr;
+      this.gpu.resize(this.canvas);
+      return;
+    }
+
+    if (!this.ctx) return; // backend not decided yet — just keep this.w/this.h
+
+    // Canvas 2D fallback
     this.canvas.width = this.w * dpr;
     this.canvas.height = this.h * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -232,11 +264,22 @@ export class Simulation {
         this.particles.push(p);
       }
     }
+
+    // Upload the fresh CPU particles to the GPU and reset death tracking.
+    if (this.gpu) {
+      this._syncGPU();
+      this.gpu.uploadParticles(this.particles);
+      this._resetDeathTracking();
+    }
   }
 
   adjustParticleCount() {
     const current = this.particles.length;
     if (current === this.totalParticles) return;
+
+    // In WebGPU mode the population is owned by the GPU (free-list dynamics),
+    // so the initial count only applies on Reset.
+    if (this.gpu) return;
 
     if (this.totalParticles > current) {
       for (let i = 0; i < this.totalParticles - current; i++) {
@@ -255,6 +298,11 @@ export class Simulation {
 
   /* ---- Physics step ---- */
   step() {
+    // WebGPU: one compute pass does binning + forces + integration + life.
+    if (this.gpu) {
+      this.gpu.submitCompute();
+      return;
+    }
     const dt = this.fixedDt;
     const radius = this.interactionRadius;
     const maxSpeed = this.maxSpeed;
@@ -584,6 +632,11 @@ export class Simulation {
 
   /* ---- Render ---- */
   render() {
+    // WebGPU: the full pipeline runs on the GPU; CPU only handles sound + FX.
+    if (this.gpu) {
+      this._gpuRender();
+      return;
+    }
     const ctx = this.ctx;
     const worldCtx = this.worldCtx;
     const trail = this.trail;
@@ -734,6 +787,189 @@ export class Simulation {
     this.sound.update();
   }
 
+  /* ---- WebGPU backend ---- */
+
+  /**
+   * Decide the rendering backend: WebGPU (preferred) or Canvas 2D fallback.
+   * The main canvas can only host one context type, so this runs once, before
+   * the loop draws anything (the loop no-ops until _contextReady is true).
+   */
+  async _initContext() {
+    let useGPU = false;
+    if (WebGPUEngine.isSupported()) {
+      const engine = new WebGPUEngine();
+      useGPU = await engine.init(this.canvas);
+      if (useGPU) this.gpu = engine;
+    }
+
+    if (this.gpu) {
+      this._syncGPU();
+      this.gpu.uploadParticles(this.particles);
+      this._resetDeathTracking();
+      this.resize();
+      this._contextReady = true;
+      console.log('[particle-life] WebGPU backend active');
+    } else {
+      this.ctx = this.canvas.getContext('2d');
+      this.resize();
+      this._contextReady = true;
+      console.log('[particle-life] WebGPU unavailable → Canvas 2D fallback');
+    }
+  }
+
+  /** Push types/matrix/background/glow to the GPU (cheap; also called per frame). */
+  _syncGPU() {
+    if (!this.gpu) return;
+    this.gpu.setTypes(this.types);
+    this.gpu.setMatrix(this.matrix, this.numTypes);
+    const { r, g, b } = hexToRgb(this.bgColor);
+    this.gpu.setBgColor(r / 255, g / 255, b / 255);
+    this.gpu.setGlowParams(this.glowSize, this.glowIntensity);
+  }
+
+  /** Push per-frame simulation params to the GPU before any compute pass. */
+  _gpuSetParams() {
+    this.gpu.setParams({
+      worldW: this.w, worldH: this.h,
+      radius: this.interactionRadius,
+      maxSpeed: this.maxSpeed,
+      damping: this.damping,
+      dt: this.fixedDt,
+      wrap: this.wrap,
+      lifeEnabled: this.lifeEnabled,
+      energyDecay: this.energyDecay,
+      collisionCost: this.collisionCost,
+      feedRate: this.feedRate,
+      reproNeighbors: this.reproNeighbors,
+      reproEnergy: this.reproEnergy,
+      reproCooldown: this.reproCooldown,
+      numTypes: this.numTypes,
+      trail: this.trail,
+    });
+  }
+
+  /** GPU render pass: camera, colors, particles, glow, death FX, vectors/grid. */
+  _gpuRender() {
+    const g = this.gpu;
+    this._syncGPU(); // keep types/matrix/bg/glow current (picks up live UI edits)
+    g.setCamera(this.viewX, this.viewY, this.zoom);
+    g.submitRender({
+      trail: this.trail,
+      glow: this.glow,
+      glowIntensity: this.glowIntensity,
+      showVectors: this.showVectors,
+      showGrid: this.showGrid,
+      deathFX: this.deathFx,
+    });
+    this.sound.update();
+  }
+
+  /** Kick off async readback of this frame's GPU particle state. */
+  _kickoffReadback() {
+    this.gpu.readParticles().then((data) => {
+      if (data) {
+        this._lastReadback = data;
+        this._readbackReady = true;
+      }
+    });
+  }
+
+  /** If a readback has landed since last frame, apply it to CPU-side state. */
+  _processPendingReadback() {
+    if (!this._readbackReady) return;
+    this._readbackReady = false;
+    const data = this._lastReadback;
+    this._lastReadback = null;
+    if (!data) return;
+    this._applyReadback(data);
+  }
+
+  /**
+   * Rebuild the CPU-side particle mirror and death/birth tracking from GPU
+   * readback data. Feeds the population counter, the sound engine (which needs
+   * real positions + a CPU spatial grid) and death-FX spawning.
+   */
+  _applyReadback(data) {
+    const max = this.gpu.maxParticles;
+    const prev = this._prevAlive;
+    const next = new Set();
+
+    // Pass 1 — refresh the mirror for every ALIVE particle and record its id.
+    // (The GPU zeroes a dead slot's id/position, so we only trust alive slots.)
+    for (let i = 0; i < max; i++) {
+      const o = i * PARTICLE_FLOATS;
+      if (data[o + P_ALIVE] < 0.5) continue;
+      const id = Math.round(data[o + P_ID]);
+      next.add(id);
+
+      let p = this._mirrorParticles.get(id);
+      if (!p) { p = new Particle(0, 0, 0, id); this._mirrorParticles.set(id, p); }
+      p.x = data[o + P_X];
+      p.y = data[o + P_Y];
+      p.prevX = data[o + P_PX];
+      p.prevY = data[o + P_PY];
+      p.vx = data[o + P_VX];
+      p.vy = data[o + P_VY];
+      p.type = Math.round(data[o + P_TYPE]);
+      p.energy = data[o + P_ENERGY];
+      p.age = data[o + P_AGE];
+      p.reproCooldown = data[o + P_COOLDOWN];
+    }
+
+    // Pass 2 — a death is an id that was alive last readback but is gone now.
+    // (Using set-difference rather than "this slot is dead" avoids false deaths
+    // when the GPU reuses a parent's id for its child and zeroes the old slot.)
+    let deaths = 0;
+    for (const id of prev) {
+      if (next.has(id)) continue;
+      const p = this._mirrorParticles.get(id);
+      if (p && this.lifeEnabled) {
+        this.spawnDeathFxAt(p.x, p.y, p.type);
+        if (this.soundEnabled) this.sound.playDeath();
+      }
+      this._mirrorParticles.delete(id);
+      deaths++;
+    }
+
+    // Births = population gain minus deaths (robust to the GPU's id reuse).
+    const births = Math.max(0, next.size - prev.size + deaths);
+
+    this.particles = [...this._mirrorParticles.values()];
+    this._prevAlive = next;
+    this.births += births;
+    this.deaths += deaths;
+
+    // Rebuild the CPU spatial grid so the sound engine works off readback data.
+    if (this.soundEnabled) {
+      this.grid.cellSize = this.interactionRadius;
+      this.grid.build(this.particles, this.w, this.h);
+    }
+  }
+
+  /** Reset death/birth tracking (called on (re)initialization). */
+  _resetDeathTracking() {
+    this._prevAlive = new Set(this.particles.map((_, i) => i));
+    this._mirrorParticles = new Map();
+    for (const p of this.particles) this._mirrorParticles.set(p._index, p);
+    this._lastReadback = null;
+    this._readbackReady = false;
+  }
+
+  /** Spawn a death burst at explicit coordinates (GPU path — no Particle object). */
+  spawnDeathFxAt(x, y, type) {
+    if (this.deathFx.length >= 400) return;
+    for (let i = 0; i < 2; i++) {
+      const a = this.rng() * Math.PI * 2;
+      const s = 0.2 + this.rng() * 0.6;
+      this.deathFx.push({
+        x, y,
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+        life: 0.8 + this.rng() * 0.2,
+        type,
+      });
+    }
+  }
+
   /* ---- Main loop ----
    *
    * The render is pinned to 60 fps. Physics runs on a fixed timestep
@@ -766,6 +1002,7 @@ export class Simulation {
     }
 
     if (!this.running) return;
+    if (!this._contextReady) return; // backend still initializing
 
     // ---- Adaptive timescale: slow the sim instead of dropping the frame rate ----
     // One render frame has a fixed budget (interval ms). We track the rolling
@@ -776,6 +1013,12 @@ export class Simulation {
     const estStep = Math.max(this._stepCost, 0.05);
     const target = Math.max(this.minTimescale, Math.min(1, (interval * 0.8) / estStep));
     this.timescale += (target - this.timescale) * 0.15;
+
+    // ---- GPU: apply the previous frame's readback (CPU mirror, deaths, grid) ----
+    if (this.gpu) this._processPendingReadback();
+
+    // ---- GPU: push this frame's sim params before any compute ----
+    if (this.gpu) this._gpuSetParams();
 
     // ---- Fixed-timestep physics ----
     // Each rendered frame advances the sim by one nominal frame scaled by the
@@ -795,10 +1038,18 @@ export class Simulation {
       this._stepCost = this._stepCost ? this._stepCost * 0.8 + perStep * 0.2 : perStep;
     }
 
+    // ---- GPU: age CPU-side death FX once per frame (spawns come from readback) ----
+    if (this.gpu && this.lifeEnabled && steps > 0) this.updateDeathFx(this.fixedDt);
+
     this.render();
+
+    // ---- GPU: kick off async readback of this frame's particle state ----
+    if (this.gpu && steps > 0) this._kickoffReadback();
   }
 
   start() {
+    if (this._loopStarted) return; // guard against double rAF loops
+    this._loopStarted = true;
     this.nextFrameTime = 0;
     this.simAccum = 0;
     this._stepCost = 0;

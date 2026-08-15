@@ -9,7 +9,7 @@
 const COMMON = /* wgsl */`
 struct Particle {
     x: f32, y: f32, prevX: f32, prevY: f32,
-    vx: f32, vy: f32, type: f32, energy: f32,
+    vx: f32, vy: f32, ptype: f32, energy: f32,
     age: f32, reproCooldown: f32, alive: f32, id: f32,
 };
 
@@ -233,7 +233,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 if (q.alive < 0.5) { continue; }
                 if (q.id == p.id) { continue; }
 
-                let qType = u32(q.type);
+                let qType = u32(q.ptype);
                 if (qType >= numTypes) { continue; }
 
                 var ddx = q.x - p.x;
@@ -250,7 +250,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 if (dSq >= radius * radius || dSq < 0.01) { continue; }
 
                 let d = sqrt(dSq);
-                let strength = matrix[u32(p.type) * numTypes + qType];
+                let strength = matrix[u32(p.ptype) * numTypes + qType];
                 let f = strength * (1.0 - d / radius);
 
                 fx += (ddx / d) * f;
@@ -323,7 +323,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let parentEnergy = newEnergy * 0.5;
                 var child = Particle(
                     nx, ny, nx, ny,
-                    0.0, 0.0, p.type, parentEnergy,
+                    0.0, 0.0, p.ptype, parentEnergy,
                     0.0, params.reproCooldown, 1.0, f32(slot)
                 );
                 // Deterministic pseudo-random jitter based on slot index
@@ -349,7 +349,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     outParticles[i] = Particle(
         nx, ny, nprevX, nprevY,
-        nvx, nvy, p.type, newEnergy,
+        nvx, nvy, p.ptype, newEnergy,
         newAge, newCooldown, newAlive, p.id
     );
 }
@@ -412,7 +412,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     }
 
     let c = corners[vid];
-    let ti = typeInfo[u32(p.type)];
+    let ti = typeInfo[u32(p.ptype)];
     let worldPos = vec2f(p.x, p.y) + c * ti.size;
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
@@ -469,7 +469,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     }
 
     let c = corners[vid];
-    let ti = typeInfo[u32(p.type)];
+    let ti = typeInfo[u32(p.ptype)];
     let size = ti.size * glowParams.x;
     let worldPos = vec2f(p.x, p.y) + c * size;
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
@@ -572,7 +572,7 @@ export const DEATH_FX = /* wgsl */`
 ${COMMON}
 
 struct FXInstance {
-    x: f32, y: f32, life: f32, type: f32,
+    x: f32, y: f32, life: f32, ptype: f32,
 };
 
 struct VertexOut {
@@ -608,7 +608,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     }
 
     let c = corners[vid];
-    let ti = typeInfo[u32(fx.type)];
+    let ti = typeInfo[u32(fx.ptype)];
     let size = ti.size * glowSize * fx.life;
     let worldPos = vec2f(fx.x, fx.y) + c * size;
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;

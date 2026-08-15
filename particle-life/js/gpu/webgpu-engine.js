@@ -47,9 +47,11 @@ export class WebGPUEngine {
         this._bgColor = null;
         this._glowParams = null;
 
-        // Readback
-        this._readbackBuf = null;
-        this._readbackPromise = null;
+        // Readback (ping-pong — a buffer can't be a copy destination while a
+        // previous frame's mapAsync is still mapped/mapping)
+        this._readbackBufA = null;
+        this._readbackBufB = null;
+        this._rbFlip = false;
 
         // CPU-side death FX
         this.deathFX = [];
@@ -118,7 +120,7 @@ export class WebGPUEngine {
 
         // Uniforms
         this.paramsBuf = d.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        this.cameraBuf = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.cameraBuf = d.createBuffer({ size: 36, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 9 floats (Camera struct)
         this.typeInfoBuf = d.createBuffer({ size: MAX_TYPES * 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         this.matrixBuf = d.createBuffer({ size: MAX_TYPES * MAX_TYPES * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         this.psParamsBuf = d.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -130,8 +132,10 @@ export class WebGPUEngine {
         // Death FX
         this.fxBuf = d.createBuffer({ size: MAX_FX * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
-        // Readback
-        this._readbackBuf = d.createBuffer({ size: pSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        // Readback (ping-pong pair)
+        this._readbackBufA = d.createBuffer({ size: pSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        this._readbackBufB = d.createBuffer({ size: pSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        this._rbFlip = false;
 
         // Line vertex buffer (for vectors & grid) — max 10000 lines × 6 verts × 24 bytes
         this.lineBuf = d.createBuffer({ size: 10000 * 6 * 24, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -318,9 +322,20 @@ export class WebGPUEngine {
     setParams(p) {
         this._params = p;
 
-        // Compute grid dimensions
-        this.gridW = Math.max(1, Math.ceil(p.worldW / p.radius));
-        this.gridH = Math.max(1, Math.ceil(p.worldH / p.radius));
+        // Compute grid dimensions, growing the cell size if needed so the grid
+        // never exceeds MAX_BINS cells (the bin buffers are fixed at MAX_BINS;
+        // an overflow here is an out-of-bounds GPU write → device lost). The
+        // 3x3 neighbor search stays correct as long as cellSize >= radius.
+        let cellSize = p.radius;
+        let gridW = Math.max(1, Math.ceil(p.worldW / cellSize));
+        let gridH = Math.max(1, Math.ceil(p.worldH / cellSize));
+        while (gridW * gridH > MAX_BINS) {
+            cellSize *= 1.15;
+            gridW = Math.max(1, Math.ceil(p.worldW / cellSize));
+            gridH = Math.max(1, Math.ceil(p.worldH / cellSize));
+        }
+        this.gridW = gridW;
+        this.gridH = gridH;
 
         const data = new Float32Array(24);
         data[0] = p.worldW;
@@ -338,9 +353,9 @@ export class WebGPUEngine {
         data[12] = p.reproEnergy;
         data[13] = p.reproCooldown;
         data[14] = p.numTypes;
-        data[15] = this.gridW;
-        data[16] = this.gridH;
-        data[17] = p.radius; // cellSize = radius
+        data[15] = gridW;
+        data[16] = gridH;
+        data[17] = cellSize; // cellSize = radius (clamped to fit the bin buffers)
         data[18] = this.maxParticles;
         data[19] = p.trail || 0;
         this.queue.writeBuffer(this.paramsBuf, 0, data);
@@ -381,7 +396,7 @@ export class WebGPUEngine {
         data.fill(0);
         for (let i = 0; i < numTypes && i < MAX_TYPES; i++) {
             for (let j = 0; j < numTypes && j < MAX_TYPES; j++) {
-                data[i * MAX_TYPES + j] = matrix[i]?.[j] ?? 0;
+                data[i * numTypes + j] = matrix[i]?.[j] ?? 0;
             }
         }
         this.queue.writeBuffer(this.matrixBuf, 0, data);
@@ -554,8 +569,8 @@ export class WebGPUEngine {
             pass.end();
         }
 
-        // 6. Copy to readback buffer
-        encoder.copyBufferToBuffer(outBuf, 0, this._readbackBuf, 0, numParticles * PARTICLE_BYTES);
+        // 6. Copy to readback buffer (ping-pong; read back in readParticles)
+        encoder.copyBufferToBuffer(outBuf, 0, this._rbCurrent, 0, numParticles * PARTICLE_BYTES);
 
         q.submit([encoder.finish()]);
 
@@ -632,6 +647,18 @@ export class WebGPUEngine {
 
             // Swap trail textures
             this.trailCurrent = this.trailCurrent === 'A' ? 'B' : 'A';
+        } else {
+            // Trails off — keep the current trail texture cleared so the
+            // composite doesn't add a stale/frozen trail image.
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: trailCurrentView,
+                    clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                }],
+            });
+            pass.end();
         }
 
         // 3. Composite (background + trail)
@@ -648,7 +675,7 @@ export class WebGPUEngine {
             pass.setBindGroup(0, d.createBindGroup({
                 layout: this.compositePipeline.getBindGroupLayout(0),
                 entries: [
-                    { binding: 0, resource: trailOn ? (this.trailCurrent === 'A' ? this.trailViewA : this.trailViewB) : (this.trailViewA) },
+                    { binding: 0, resource: trailCurrentView },
                     { binding: 1, resource: this.trailSampler },
                     { binding: 2, resource: { buffer: this.cameraBuf } },
                     { binding: 3, resource: { buffer: this.bgColorBuf } },
@@ -740,9 +767,9 @@ export class WebGPUEngine {
         // 7. Vectors & Grid (lines)
         if (opts.showVectors || opts.showGrid) {
             const lineVerts = this._buildLineVertices(opts);
-            this._lineVertexCount = lineVerts.length / 5; // 5 floats per vertex
+            this._lineVertexCount = lineVerts.length / 6; // 6 floats per vertex (pos vec2 + color vec4)
             if (this._lineVertexCount > 0) {
-                q.writeBuffer(this.lineBuf, 0, lineVerts, 0, this._lineVertexCount);
+                q.writeBuffer(this.lineBuf, 0, lineVerts);
 
                 const pass = encoder.beginRenderPass({
                     colorAttachments: [{
@@ -758,7 +785,7 @@ export class WebGPUEngine {
                         { binding: 0, resource: { buffer: this.cameraBuf } },
                     ],
                 }));
-                pass.setVertexBuffer(0, this.lineBuf, 0, this._lineVertexCount * 24);
+                pass.setVertexBuffer(0, this.lineBuf, 0, lineVerts.byteLength);
                 pass.draw(this._lineVertexCount);
                 pass.end();
             }
@@ -806,12 +833,18 @@ export class WebGPUEngine {
 
     /* ---- Readback ---- */
 
+    /** The readback buffer to use this frame (alternates each frame). */
+    get _rbCurrent() {
+        return this._rbFlip ? this._readbackBufB : this._readbackBufA;
+    }
+
     /**
      * Start async readback of particle data. Call after submitCompute().
      * Resolves with a Float32Array of particle data.
      */
     readParticles() {
-        const buf = this._readbackBuf;
+        const buf = this._rbCurrent;
+        this._rbFlip = !this._rbFlip; // advance ping-pong for the next frame
         return buf.mapAsync(GPUMapMode.READ).then(() => {
             const data = new Float32Array(buf.getMappedRange().slice(0));
             buf.unmap();
