@@ -216,23 +216,10 @@ export class Simulation {
     const radius = this.interactionRadius;
     const maxSpeed = this.maxSpeed;
     const damping = this.damping;
-    const rSq = radius * radius;
-    const w = this.w;
-    const h = this.h;
-    const wrap = this.wrap;
-    const halfW = w * 0.5;
-    const halfH = h * 0.5;
+    const maxForce = maxSpeed * 2;
 
     this.grid.cellSize = radius;
-    this.grid.build(this.particles, w, h);
-
-    const grid = this.grid;
-    const cs = grid.cellSize;
-    const cols = grid.cols;
-    const rows = grid.rows;
-    const offsets = grid.offsets;
-    const items = grid.items;
-    const cellRadius = Math.ceil(radius / cs); // 1 when cellSize === radius
+    this.grid.build(this.particles, this.w, this.h);
 
     const particles = this.particles;
     const n = particles.length;
@@ -243,57 +230,37 @@ export class Simulation {
       const p = particles[i];
       let fx = 0, fy = 0;
 
-      // Scan the neighborhood cells inline: no per-particle array allocation,
-      // no Map lookups. Visit order is identical to the old getNeighbors():
-      // cell offsets (ox outer, oy inner) from -r..+r, buckets in ascending
-      // particle-index order — so the force accumulation is bit-identical.
-      const pcx = Math.floor(p.x / cs);
-      const pcy = Math.floor(p.y / cs);
-      const row = matrix[p.type];
+      const neighbors = this.grid.getNeighbors(p, radius);
+      for (let j = 0; j < neighbors.length; j++) {
+        const q = neighbors[j];
+        if (q.type >= numTypes) continue;
 
-      for (let ox = -cellRadius; ox <= cellRadius; ox++) {
-        const cx = pcx + ox;
-        if (cx < 0 || cx >= cols) continue;
-        for (let oy = -cellRadius; oy <= cellRadius; oy++) {
-          const cy = pcy + oy;
-          if (cy < 0 || cy >= rows) continue;
-          const c = cy * cols + cx;
-          const start = offsets[c];
-          const end = offsets[c + 1];
-          for (let k = start; k < end; k++) {
-            const qi = items[k];
-            if (qi === i) continue;
-            const q = particles[qi];
-            if (q.type >= numTypes) continue;
+        let dx = q.x - p.x;
+        let dy = q.y - p.y;
 
-            let dx = q.x - p.x;
-            let dy = q.y - p.y;
+        if (this.wrap) {
+          if (dx > this.w * 0.5) dx -= this.w;
+          else if (dx < -this.w * 0.5) dx += this.w;
+          if (dy > this.h * 0.5) dy -= this.h;
+          else if (dy < -this.h * 0.5) dy += this.h;
+        }
 
-            if (wrap) {
-              if (dx > halfW) dx -= w;
-              else if (dx < -halfW) dx += w;
-              if (dy > halfH) dy -= h;
-              else if (dy < -halfH) dy += h;
-            }
+        const dSq = dx * dx + dy * dy;
+        if (dSq >= radius * radius || dSq < 0.01) continue;
 
-            const dSq = dx * dx + dy * dy;
-            if (dSq >= rSq || dSq < 0.01) continue;
+        const d = Math.sqrt(dSq);
+        const strength = matrix[p.type]?.[q.type] ?? 0;
 
-            const d = Math.sqrt(dSq);
-            const strength = row ? (row[q.type] ?? 0) : 0;
+        const f = strength * (1 - d / radius);
 
-            const f = strength * (1 - d / radius);
+        fx += (dx / d) * f;
+        fy += (dy / d) * f;
 
-            fx += (dx / d) * f;
-            fy += (dy / d) * f;
-
-            // Separation — push apart when very close
-            if (d < 5) {
-              const sep = (5 - d) / 5 * 0.5;
-              fx -= (dx / d) * sep * 2;
-              fy -= (dy / d) * sep * 2;
-            }
-          }
+        // Separation — push apart when very close
+        if (d < 5) {
+          const sep = (5 - d) / 5 * 0.5;
+          fx -= (dx / d) * sep * 2;
+          fy -= (dy / d) * sep * 2;
         }
       }
 
@@ -313,10 +280,10 @@ export class Simulation {
       p.x += p.vx;
       p.y += p.vy;
 
-      if (p.x < 0) { p.x += w; p.prevX += w; }
-      else if (p.x >= w) { p.x -= w; p.prevX -= w; }
-      if (p.y < 0) { p.y += h; p.prevY += h; }
-      else if (p.y >= h) { p.y -= h; p.prevY -= h; }
+      if (p.x < 0) { p.x += this.w; p.prevX += this.w; }
+      else if (p.x >= this.w) { p.x -= this.w; p.prevX -= this.w; }
+      if (p.y < 0) { p.y += this.h; p.prevY += this.h; }
+      else if (p.y >= this.h) { p.y -= this.h; p.prevY -= this.h; }
     }
   }
 
@@ -328,10 +295,6 @@ export class Simulation {
     const zoom = this.zoom;
     const viewX = this.viewX;
     const viewY = this.viewY;
-    const particles = this.particles;
-    const n = particles.length;
-    const types = this.types;
-    const typeCount = types.length;
 
     if (trail > 0) {
       // Fade everything on world canvas via destination-out (gradually removes old trails)
@@ -341,22 +304,18 @@ export class Simulation {
       worldCtx.fillRect(0, 0, this.w, this.h);
       worldCtx.globalCompositeOperation = 'source-over';
 
-      // Draw new trail lines in world space — batched per type (few types,
-      // many particles), so each type is a single beginPath/stroke instead
-      // of one draw call per particle.
-      worldCtx.lineCap = 'round';
-      for (let t = 0; t < typeCount; t++) {
-        const ty = types[t];
-        if (!ty) continue;
-        worldCtx.strokeStyle = ty.color;
-        worldCtx.lineWidth = ty.size;
+      // Draw new trail lines in world space
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        const t = this.types[p.type];
+        if (!t) continue;
+
         worldCtx.beginPath();
-        for (let i = 0; i < n; i++) {
-          const p = particles[i];
-          if (p.type !== t) continue;
-          worldCtx.moveTo(p.prevX, p.prevY);
-          worldCtx.lineTo(p.x, p.y);
-        }
+        worldCtx.moveTo(p.prevX, p.prevY);
+        worldCtx.lineTo(p.x, p.y);
+        worldCtx.strokeStyle = t.color;
+        worldCtx.lineWidth = t.size;
+        worldCtx.lineCap = 'round';
         worldCtx.stroke();
       }
     } else {
@@ -364,33 +323,25 @@ export class Simulation {
       worldCtx.clearRect(0, 0, this.w, this.h);
     }
 
-    // Draw particles on top of trails (world space) — batched per type:
-    // one path + one fill per type instead of one beginPath/fill per particle.
-    for (let t = 0; t < typeCount; t++) {
-      const ty = types[t];
-      if (!ty) continue;
-      worldCtx.fillStyle = ty.color;
-      worldCtx.beginPath();
-      for (let i = 0; i < n; i++) {
-        const p = particles[i];
-        if (p.type !== t) continue;
-        worldCtx.arc(p.x, p.y, ty.size, 0, Math.PI * 2);
-      }
-      worldCtx.fill();
-    }
+    // Draw particles on top of trails (world space)
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      const t = this.types[p.type];
+      if (!t) continue;
 
-    // Velocity vectors — single path, single stroke
-    if (this.showVectors) {
-      worldCtx.strokeStyle = 'rgba(255,255,255,0.25)';
-      worldCtx.lineWidth = 0.5;
       worldCtx.beginPath();
-      for (let i = 0; i < n; i++) {
-        const p = particles[i];
-        if (!types[p.type]) continue;
+      worldCtx.arc(p.x, p.y, t.size, 0, Math.PI * 2);
+      worldCtx.fillStyle = t.color;
+      worldCtx.fill();
+
+      if (this.showVectors) {
+        worldCtx.beginPath();
         worldCtx.moveTo(p.x, p.y);
         worldCtx.lineTo(p.x + p.vx * 8, p.y + p.vy * 8);
+        worldCtx.strokeStyle = 'rgba(255,255,255,0.25)';
+        worldCtx.lineWidth = 0.5;
+        worldCtx.stroke();
       }
-      worldCtx.stroke();
     }
 
     // --- Main canvas: solid background + world canvas through camera transform ---
@@ -400,33 +351,33 @@ export class Simulation {
     ctx.save();
     ctx.translate(-viewX * zoom, -viewY * zoom);
     ctx.scale(zoom, zoom);
-    // Draw the world canvas at its *logical* size. Its pixel buffer is
-    // w*dpr × h*dpr, and the context already carries a dpr transform —
-    // without the explicit size the image would be double-scaled on
-    // high-DPI displays (a pixel-perfect no-op at dpr = 1).
-    ctx.drawImage(this.worldCanvas, 0, 0, this.w, this.h);
+    ctx.drawImage(this.worldCanvas, 0, 0);
     ctx.restore();
 
     // Draw spatial grid in screen space (fixed line width, doesn't scale with zoom)
     if (this.showGrid) {
+      ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.04)';
       ctx.lineWidth = 0.5;
       const cs = this.grid.cellSize;
-      ctx.beginPath();
       for (let x = 0; x <= this.w; x += cs) {
+        ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, this.h);
+        ctx.stroke();
       }
       for (let y = 0; y <= this.h; y += cs) {
+        ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(this.w, y);
+        ctx.stroke();
       }
-      ctx.stroke();
+      ctx.restore();
     }
 
     // Update previous positions for next frame's trail lines
-    for (let i = 0; i < n; i++) {
-      const p = particles[i];
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
       p.prevX = p.x;
       p.prevY = p.y;
     }
