@@ -406,7 +406,11 @@ export class UIController {
   }
 
   updateStats() {
-    document.getElementById('fps-display').textContent = `FPS: ${this.sim.fps}`;
+    // Show the timescale when it has degraded below real time (e.g. "0.5x"),
+    // so it's visible that the sim slowed instead of the frame rate dropping.
+    const ts = this.sim.timescale;
+    const tsTxt = ts < 0.995 ? ` · ${ts.toFixed(2)}x` : '';
+    document.getElementById('fps-display').textContent = `FPS: ${this.sim.fps}${tsTxt}`;
     document.getElementById('count-display').textContent = `Particles: ${this.sim.particles.length}`;
     document.getElementById('zoom-display').textContent = `Zoom: ${this.sim.zoom.toFixed(1)}x`;
 

@@ -41,7 +41,6 @@ export class Simulation {
     this.showVectors = false;
     this.showGrid = false;
     this.wrap = false;
-    this.maxFps = 165;
 
     // Life cycle (reproduction & death) — see lifeStep()
     this.lifeEnabled = true;
@@ -78,10 +77,19 @@ export class Simulation {
     this.running = true;
     this.rng = mulberry32(this.seed);
 
-    // Fixed timestep
+    // Fixed timestep + adaptive timescale (see loop()).
+    // The render is locked to targetFps. Physics integrates in fixedDt
+    // sub-steps; when the machine can't keep up with real time, `timescale`
+    // is lowered so the simulation slows down instead of the frame rate
+    // dropping below 60fps.
     this.fixedDt = 1 / 60;
-    this.accTime = 0;
-    this.lastTimestamp = 0;
+    this.targetFps = 60;
+    this.timescale = 1;          // sim-speed multiplier (1 = real time)
+    this.minTimescale = 0.25;    // never slower than 1/4 real-time
+    this.maxSteps = 8;           // hard cap on physics steps per render frame
+    this.simAccum = 0;           // leftover sim-time awaiting fixed steps
+    this._stepCost = 0;          // rolling average ms per physics step
+    this.nextFrameTime = 0;      // render "phase" — gate for the 60fps lock
 
     // FPS tracking
     this.frameCount = 0;
@@ -726,17 +734,27 @@ export class Simulation {
     this.sound.update();
   }
 
-  /* ---- Main loop ---- */
+  /* ---- Main loop ----
+   *
+   * The render is pinned to 60 fps. Physics runs on a fixed timestep
+   * (fixedDt) but the *rate* at which it advances is controlled by an
+   * adaptive `timescale`. Each render frame measures how long a physics step
+   * takes; if the cost threatens the 60fps budget, the timescale eases down
+   * so the simulation slows instead of the frame rate dropping. When there's
+   * headroom the timescale eases back up to real time.
+   */
   loop(timestamp) {
-    const minInterval = 1000 / this.maxFps;
-    const elapsed = timestamp - (this.lastFrameTime || 0);
-    if (elapsed < minInterval) {
-      requestAnimationFrame((t) => this.loop(t));
-      return;
-    }
-    this.lastFrameTime = timestamp;
-
     requestAnimationFrame((t) => this.loop(t));
+
+    // ---- 60 fps render gate ----
+    // rAF fires at the display's native rate (up to 144 Hz+); render only when
+    // the target phase is due so the frame rate stays pinned to targetFps.
+    // Re-anchor the phase after a big hitch so we never burst-catch-up.
+    const interval = 1000 / this.targetFps;
+    if (this.nextFrameTime === 0) this.nextFrameTime = timestamp;
+    if (timestamp < this.nextFrameTime) return;
+    if (timestamp - this.nextFrameTime > interval * 3) this.nextFrameTime = timestamp;
+    this.nextFrameTime += interval;
 
     // FPS
     this.frameCount++;
@@ -749,24 +767,42 @@ export class Simulation {
 
     if (!this.running) return;
 
-    const delta = this.lastTimestamp ? (timestamp - this.lastTimestamp) / 1000 : this.fixedDt;
-    this.lastTimestamp = timestamp;
-    this.accTime += delta;
+    // ---- Adaptive timescale: slow the sim instead of dropping the frame rate ----
+    // One render frame has a fixed budget (interval ms). We track the rolling
+    // cost of a single physics step and compute the fastest timescale whose
+    // step still fits the budget (with ~20% headroom for rendering). As the
+    // cost rises, timescale eases down (sim slows); as headroom returns it
+    // eases back up to 1 (real time).
+    const estStep = Math.max(this._stepCost, 0.05);
+    const target = Math.max(this.minTimescale, Math.min(1, (interval * 0.8) / estStep));
+    this.timescale += (target - this.timescale) * 0.15;
 
+    // ---- Fixed-timestep physics ----
+    // Each rendered frame advances the sim by one nominal frame scaled by the
+    // current timescale, then runs one fixedDt step per accrued unit. At
+    // timescale 1 this is exactly one step/frame (real time); a lower timescale
+    // means fewer steps per second, so the sim slows while the render holds 60fps.
+    this.simAccum = Math.min(this.simAccum + this.fixedDt * this.timescale, this.fixedDt * this.maxSteps);
+    const t0 = performance.now();
     let steps = 0;
-    while (this.accTime >= this.fixedDt && steps < 5) {
+    while (this.simAccum >= this.fixedDt && steps < this.maxSteps) {
       this.step();
-      this.accTime -= this.fixedDt;
+      this.simAccum -= this.fixedDt;
       steps++;
     }
-    if (this.accTime > this.fixedDt * 5) this.accTime = 0;
+    if (steps > 0) {
+      const perStep = (performance.now() - t0) / steps;
+      this._stepCost = this._stepCost ? this._stepCost * 0.8 + perStep * 0.2 : perStep;
+    }
 
     this.render();
   }
 
   start() {
-    this.lastTimestamp = 0;
-    this.accTime = 0;
+    this.nextFrameTime = 0;
+    this.simAccum = 0;
+    this._stepCost = 0;
+    this.timescale = 1;
     requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -787,7 +823,6 @@ export class Simulation {
       showGrid: this.showGrid,
       types: this.types.map(t => ({ ...t })),
       matrix: this.matrix.map(r => [...r]),
-      maxFps: this.maxFps,
       soundEnabled: this.soundEnabled ?? false,
       life: {
         enabled: this.lifeEnabled,
@@ -815,7 +850,6 @@ export class Simulation {
     if (cfg.bgColor !== undefined) this.bgColor = cfg.bgColor;
     if (cfg.showVectors !== undefined) this.showVectors = cfg.showVectors;
     if (cfg.showGrid !== undefined) this.showGrid = cfg.showGrid;
-    if (cfg.maxFps !== undefined) this.maxFps = +cfg.maxFps;
     if (cfg.life) {
       if (cfg.life.enabled !== undefined) this.lifeEnabled = cfg.life.enabled;
       if (cfg.life.energyDecay !== undefined) this.energyDecay = +cfg.life.energyDecay;
