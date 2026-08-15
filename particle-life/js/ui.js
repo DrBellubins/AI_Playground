@@ -70,6 +70,8 @@ export class UIController {
 
     // Visuals
     this.bind('s-trail', 'v-trail', v => { this.sim.trail = +v; });
+    this.bind('s-glowsize', 'v-glowsize', v => { this.sim.glowSize = +v; });
+    this.bind('s-glowint', 'v-glowint', v => { this.sim.glowIntensity = +v; });
     document.getElementById('c-bg').addEventListener('input', e => {
       this.sim.bgColor = e.target.value;
     });
@@ -78,6 +80,9 @@ export class UIController {
     });
     document.getElementById('c-grid').addEventListener('change', e => {
       this.sim.showGrid = e.target.checked;
+    });
+    document.getElementById('c-glow').addEventListener('change', e => {
+      this.sim.glow = e.target.checked;
     });
 
     // Preset buttons
@@ -346,6 +351,11 @@ export class UIController {
     document.getElementById('v-seed').textContent = this.sim.seed;
     document.getElementById('s-trail').value = this.sim.trail;
     document.getElementById('v-trail').textContent = this.sim.trail;
+    document.getElementById('c-glow').checked = this.sim.glow;
+    document.getElementById('s-glowsize').value = this.sim.glowSize;
+    document.getElementById('v-glowsize').textContent = this.sim.glowSize;
+    document.getElementById('s-glowint').value = this.sim.glowIntensity;
+    document.getElementById('v-glowint').textContent = this.sim.glowIntensity.toFixed(2);
     document.getElementById('c-bg').value = this.sim.bgColor;
     document.getElementById('c-vectors').checked = this.sim.showVectors;
     document.getElementById('c-grid').checked = this.sim.showGrid;

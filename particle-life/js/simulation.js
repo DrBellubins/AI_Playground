@@ -5,6 +5,18 @@ import { DEFAULT_TYPES, PRESETS } from './constants.js';
 import { SoundEngine } from './sound.js';
 
 /**
+ * Convert a hex color string to {r,g,b} (0-255). Falls back to white
+ * for unparseable input.
+ */
+function hexToRgb(hex) {
+  let h = (hex || '').replace('#', '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  const n = parseInt(h, 16);
+  if (isNaN(n)) return { r: 255, g: 255, b: 255 };
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/**
  * Simulation — main loop, physics, and rendering.
  * Manages particles, camera (zoom/pan), fixed-timestep integration,
  * and renders everything to a world-space canvas that the camera
@@ -22,6 +34,9 @@ export class Simulation {
     this.damping = 0.96;
     this.seed = Math.floor(Math.random() * 99999);
     this.trail = 30;
+    this.glow = true;
+    this.glowSize = 6;        // glow radius = particle size * glowSize
+    this.glowIntensity = 0.8; // 0..1 additive strength
     this.bgColor = '#050508';
     this.showVectors = false;
     this.showGrid = false;
@@ -68,6 +83,10 @@ export class Simulation {
 
     // Sound engine for interaction feedback
     this.sound = new SoundEngine(this);
+
+    // Pre-render one soft radial sprite per particle color for the bloom
+    // effect (drawn cheaply with additive compositing at render time).
+    this.buildGlowSprites();
 
     this.resize();
     this.initParticles();
@@ -287,6 +306,29 @@ export class Simulation {
     }
   }
 
+  /* ---- Glow sprites ---- */
+  /** Pre-render a soft radial "glow" sprite for a given color. */
+  makeGlowSprite(color) {
+    const R = 36; // sprite covers radius R; gradient fades to transparent at edge
+    const c = document.createElement('canvas');
+    c.width = c.height = R * 2;
+    const g = c.getContext('2d');
+    const { r: cr, g: cg, b: cb } = hexToRgb(color);
+    const grad = g.createRadialGradient(R, R, 0, R, R, R);
+    grad.addColorStop(0.0, `rgba(${cr},${cg},${cb},0.90)`);
+    grad.addColorStop(0.2, `rgba(${cr},${cg},${cb},0.55)`);
+    grad.addColorStop(0.5, `rgba(${cr},${cg},${cb},0.16)`);
+    grad.addColorStop(1.0, `rgba(${cr},${cg},${cb},0)`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, R * 2, R * 2);
+    return c;
+  }
+
+  /** Build one glow sprite per particle type (rebuild when colors change). */
+  buildGlowSprites() {
+    this.glowSprites = this.types.map(t => this.makeGlowSprite(t.color));
+  }
+
   /* ---- Render ---- */
   render() {
     const ctx = this.ctx;
@@ -321,6 +363,28 @@ export class Simulation {
     } else {
       // No trails: clear world canvas so old trail content doesn't linger
       worldCtx.clearRect(0, 0, this.w, this.h);
+    }
+
+    // --- Glow / bloom pass (additive) ---
+    // Pre-rendered per-color radial sprites are blitted with additive
+    // ("lighter") compositing so overlapping particles bloom into hot
+    // bright spots. Cheap: one drawImage per particle, no per-frame
+    // gradient allocation. Rendered in world space so the glow scales
+    // with zoom and fades into the trail.
+    if (this.glow && this.glowIntensity > 0) {
+      worldCtx.globalCompositeOperation = 'lighter';
+      worldCtx.globalAlpha = this.glowIntensity;
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        const t = this.types[p.type];
+        if (!t) continue;
+        let sprite = this.glowSprites[p.type];
+        if (!sprite) sprite = this.glowSprites[p.type] = this.makeGlowSprite(t.color);
+        const r = t.size * this.glowSize;
+        worldCtx.drawImage(sprite, p.x - r, p.y - r, r * 2, r * 2);
+      }
+      worldCtx.globalCompositeOperation = 'source-over';
+      worldCtx.globalAlpha = 1;
     }
 
     // Draw particles on top of trails (world space)
@@ -439,6 +503,9 @@ export class Simulation {
       damping: this.damping,
       seed: this.seed,
       trail: this.trail,
+      glow: this.glow,
+      glowSize: this.glowSize,
+      glowIntensity: this.glowIntensity,
       bgColor: this.bgColor,
       showVectors: this.showVectors,
       showGrid: this.showGrid,
@@ -456,6 +523,9 @@ export class Simulation {
     if (cfg.damping !== undefined) this.damping = +cfg.damping;
     if (cfg.seed !== undefined) this.seed = cfg.seed;
     if (cfg.trail !== undefined) this.trail = cfg.trail;
+    if (cfg.glow !== undefined) this.glow = cfg.glow;
+    if (cfg.glowSize !== undefined) this.glowSize = +cfg.glowSize;
+    if (cfg.glowIntensity !== undefined) this.glowIntensity = +cfg.glowIntensity;
     if (cfg.bgColor !== undefined) this.bgColor = cfg.bgColor;
     if (cfg.showVectors !== undefined) this.showVectors = cfg.showVectors;
     if (cfg.showGrid !== undefined) this.showGrid = cfg.showGrid;
@@ -477,6 +547,7 @@ export class Simulation {
     }
     this.numTypes = n;
 
+    this.buildGlowSprites();
     this.initParticles();
     ui.syncAll();
   }
