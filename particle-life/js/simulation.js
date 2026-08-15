@@ -35,8 +35,8 @@ export class Simulation {
     this.seed = Math.floor(Math.random() * 99999);
     this.trail = 30;
     this.glow = true;
-    this.glowSize = 6;        // glow radius = particle size * glowSize
-    this.glowIntensity = 0.8; // 0..1 additive strength
+    this.glowSize = 12;
+    this.glowIntensity = 0.05;
     this.bgColor = '#050508';
     this.showVectors = false;
     this.showGrid = false;
@@ -365,28 +365,6 @@ export class Simulation {
       worldCtx.clearRect(0, 0, this.w, this.h);
     }
 
-    // --- Glow / bloom pass (additive) ---
-    // Pre-rendered per-color radial sprites are blitted with additive
-    // ("lighter") compositing so overlapping particles bloom into hot
-    // bright spots. Cheap: one drawImage per particle, no per-frame
-    // gradient allocation. Rendered in world space so the glow scales
-    // with zoom and fades into the trail.
-    if (this.glow && this.glowIntensity > 0) {
-      worldCtx.globalCompositeOperation = 'lighter';
-      worldCtx.globalAlpha = this.glowIntensity;
-      for (let i = 0; i < this.particles.length; i++) {
-        const p = this.particles[i];
-        const t = this.types[p.type];
-        if (!t) continue;
-        let sprite = this.glowSprites[p.type];
-        if (!sprite) sprite = this.glowSprites[p.type] = this.makeGlowSprite(t.color);
-        const r = t.size * this.glowSize;
-        worldCtx.drawImage(sprite, p.x - r, p.y - r, r * 2, r * 2);
-      }
-      worldCtx.globalCompositeOperation = 'source-over';
-      worldCtx.globalAlpha = 1;
-    }
-
     // Draw particles on top of trails (world space)
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
@@ -415,8 +393,41 @@ export class Simulation {
     ctx.save();
     ctx.translate(-viewX * zoom, -viewY * zoom);
     ctx.scale(zoom, zoom);
-    ctx.drawImage(this.worldCanvas, 0, 0);
+    // Draw the world canvas into its LOGICAL size (w × h), not its bitmap
+    // size (w*dpr × h*dpr). This keeps world-logical units 1:1 with the main
+    // canvas' logical coordinates at any devicePixelRatio, so screen-space
+    // effects (the glow below) stay aligned with the particles. Without the
+    // explicit size, retina displays render the world at dpr× scale and the
+    // glow ends up offset toward the top-left.
+    ctx.drawImage(this.worldCanvas, 0, 0, this.w, this.h);
     ctx.restore();
+
+    // --- Glow / bloom pass (additive, screen space) ---
+    // Drawn on the MAIN canvas, which is cleared fresh every frame, *after*
+    // the trails. So the bloom never accumulates energy in the trail — it is
+    // a per-frame bloom layered on top of the accumulated trails. Pre-rendered
+    // per-color sprites are blitted with additive ("lighter") compositing so
+    // overlapping particles bloom into hot bright spots. Rendered in screen
+    // space at native resolution, so it stays crisp at every zoom level.
+    if (this.glow && this.glowIntensity > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = this.glowIntensity;
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        const t = this.types[p.type];
+        if (!t) continue;
+        let sprite = this.glowSprites[p.type];
+        if (!sprite) sprite = this.glowSprites[p.type] = this.makeGlowSprite(t.color);
+        const sx = (p.x - viewX) * zoom;
+        const sy = (p.y - viewY) * zoom;
+        const r = t.size * this.glowSize * zoom;
+        // Skip particles fully outside the viewport
+        if (sx + r < 0 || sx - r > this.w || sy + r < 0 || sy - r > this.h) continue;
+        ctx.drawImage(sprite, sx - r, sy - r, r * 2, r * 2);
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+    }
 
     // Draw spatial grid in screen space (fixed line width, doesn't scale with zoom)
     if (this.showGrid) {
