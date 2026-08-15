@@ -94,7 +94,6 @@ export class UIController {
     this.bind('s-feed', 'v-feed', v => { this.sim.feedRate = +v; });
     this.bind('s-repro-n', 'v-repro-n', v => { this.sim.reproNeighbors = +v; });
     this.bind('s-repro-e', 'v-repro-e', v => { this.sim.reproEnergy = +v; });
-    this.bind('s-maxp', 'v-maxp', v => { this.sim.maxParticles = +v; });
     this.bind('s-cooldown', 'v-cooldown', v => { this.sim.reproCooldown = +v; });
 
     // Preset buttons
@@ -384,8 +383,6 @@ export class UIController {
     document.getElementById('v-repro-n').textContent = this.sim.reproNeighbors;
     document.getElementById('s-repro-e').value = this.sim.reproEnergy;
     document.getElementById('v-repro-e').textContent = this.sim.reproEnergy.toFixed(2);
-    document.getElementById('s-maxp').value = this.sim.maxParticles;
-    document.getElementById('v-maxp').textContent = this.sim.maxParticles;
     document.getElementById('s-cooldown').value = this.sim.reproCooldown;
     document.getElementById('v-cooldown').textContent = this.sim.reproCooldown;
 
