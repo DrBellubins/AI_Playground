@@ -299,10 +299,59 @@ export class Simulation {
       p.x += p.vx;
       p.y += p.vy;
 
-      if (p.x < 0) { p.x += this.w; p.prevX += this.w; }
-      else if (p.x >= this.w) { p.x -= this.w; p.prevX -= this.w; }
-      if (p.y < 0) { p.y += this.h; p.prevY += this.h; }
-      else if (p.y >= this.h) { p.y -= this.h; p.prevY -= this.h; }
+      this.wrapTorus(p);
+    }
+  }
+
+  /* ---- Torus wrapping (corner-aware) ---- */
+  /**
+   * Wrap a particle back into the world after it moved out of bounds.
+   *
+   * Straight exits: crossing an edge teleports the particle to the
+   * directly opposite point (same distance from the opposite edge, same
+   * direction of travel), e.g. left edge -> right edge.
+   *
+   * Corner exits: if a particle crosses one edge while it is within a
+   * few frames of travel of the adjacent edge (i.e. it is really
+   * leaving through a corner), the adjacent axis is mirrored to the
+   * opposite side in the same step. That makes a corner exit a single
+   * teleport to the opposite corner with the exit angle preserved,
+   * instead of two separate axis-aligned jumps a few frames apart.
+   *
+   * prevX/prevY are transformed with the same mapping so the trail
+   * segment stays short and is drawn at the new location.
+   */
+  wrapTorus(p) {
+    const w = this.w, h = this.h;
+    const MIN_LA = 2;  // px — minimum corner look-ahead distance
+    const MAX_LA = 10; // px — maximum corner look-ahead distance
+    const FRAMES = 4;  // travel within this many frames = "at the corner"
+
+    let wrappedX = false, wrappedY = false;
+
+    if (p.x < 0) { p.x += w; p.prevX += w; wrappedX = true; }
+    else if (p.x >= w) { p.x -= w; p.prevX -= w; wrappedX = true; }
+    if (p.y < 0) { p.y += h; p.prevY += h; wrappedY = true; }
+    else if (p.y >= h) { p.y -= h; p.prevY -= h; wrappedY = true; }
+
+    // Exactly one axis crossed an edge this frame (an exit event). If
+    // the particle is also about to cross the adjacent edge, mirror it
+    // to the opposite side right now: one corner-to-corner teleport.
+    if (wrappedX !== wrappedY) {
+      if (p.vx > 0) {
+        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * p.vx));
+        if (p.x > w - la) { p.x = w - p.x; p.prevX = w - p.prevX; }
+      } else if (p.vx < 0) {
+        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * -p.vx));
+        if (p.x < la) { p.x = w - p.x; p.prevX = w - p.prevX; }
+      }
+      if (p.vy > 0) {
+        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * p.vy));
+        if (p.y > h - la) { p.y = h - p.y; p.prevY = h - p.prevY; }
+      } else if (p.vy < 0) {
+        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * -p.vy));
+        if (p.y < la) { p.y = h - p.y; p.prevY = h - p.prevY; }
+      }
     }
   }
 
