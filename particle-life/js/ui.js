@@ -85,6 +85,18 @@ export class UIController {
       this.sim.glow = e.target.checked;
     });
 
+    // Life & death
+    document.getElementById('c-life').addEventListener('change', e => {
+      this.sim.lifeEnabled = e.target.checked;
+    });
+    this.bind('s-decay', 'v-decay', v => { this.sim.energyDecay = +v; });
+    this.bind('s-collision', 'v-collision', v => { this.sim.collisionCost = +v; });
+    this.bind('s-feed', 'v-feed', v => { this.sim.feedRate = +v; });
+    this.bind('s-repro-n', 'v-repro-n', v => { this.sim.reproNeighbors = +v; });
+    this.bind('s-repro-e', 'v-repro-e', v => { this.sim.reproEnergy = +v; });
+    this.bind('s-maxp', 'v-maxp', v => { this.sim.maxParticles = +v; });
+    this.bind('s-cooldown', 'v-cooldown', v => { this.sim.reproCooldown = +v; });
+
     // Preset buttons
     document.querySelectorAll('[data-preset]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -360,6 +372,23 @@ export class UIController {
     document.getElementById('c-vectors').checked = this.sim.showVectors;
     document.getElementById('c-grid').checked = this.sim.showGrid;
 
+    // Life & death
+    document.getElementById('c-life').checked = this.sim.lifeEnabled;
+    document.getElementById('s-decay').value = this.sim.energyDecay;
+    document.getElementById('v-decay').textContent = this.sim.energyDecay.toFixed(3);
+    document.getElementById('s-collision').value = this.sim.collisionCost;
+    document.getElementById('v-collision').textContent = this.sim.collisionCost.toFixed(2);
+    document.getElementById('s-feed').value = this.sim.feedRate;
+    document.getElementById('v-feed').textContent = this.sim.feedRate.toFixed(3);
+    document.getElementById('s-repro-n').value = this.sim.reproNeighbors;
+    document.getElementById('v-repro-n').textContent = this.sim.reproNeighbors;
+    document.getElementById('s-repro-e').value = this.sim.reproEnergy;
+    document.getElementById('v-repro-e').textContent = this.sim.reproEnergy.toFixed(2);
+    document.getElementById('s-maxp').value = this.sim.maxParticles;
+    document.getElementById('v-maxp').textContent = this.sim.maxParticles;
+    document.getElementById('s-cooldown').value = this.sim.reproCooldown;
+    document.getElementById('v-cooldown').textContent = this.sim.reproCooldown;
+
     this.syncTypeListDOM();
     this.buildMatrix();
 
@@ -380,6 +409,16 @@ export class UIController {
     document.getElementById('fps-display').textContent = `FPS: ${this.sim.fps}`;
     document.getElementById('count-display').textContent = `Particles: ${this.sim.particles.length}`;
     document.getElementById('zoom-display').textContent = `Zoom: ${this.sim.zoom.toFixed(1)}x`;
+
+    const lifeEl = document.getElementById('life-display');
+    if (lifeEl) {
+      if (this.sim.lifeEnabled) {
+        lifeEl.style.display = '';
+        lifeEl.textContent = `Births: ${this.sim.births} · Deaths: ${this.sim.deaths}`;
+      } else {
+        lifeEl.style.display = 'none';
+      }
+    }
   }
 
   /* ---- Saved presets ---- */

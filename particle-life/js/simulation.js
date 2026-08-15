@@ -43,6 +43,19 @@ export class Simulation {
     this.wrap = false;
     this.maxFps = 165;
 
+    // Life cycle (reproduction & death) — see lifeStep()
+    this.lifeEnabled = false;
+    this.energyDecay = 0.03;   // energy lost per second (metabolism)
+    this.collisionCost = 0.1;  // energy lost per second at full contact
+    this.feedRate = 0.06;      // energy gained per second per unit of attraction
+    this.reproNeighbors = 3;   // min neighbors within radius to reproduce
+    this.reproEnergy = 0.8;    // min energy to split
+    this.maxParticles = 5000;  // population cap
+    this.reproCooldown = 5;    // seconds before a particle can split again
+    this.births = 0;
+    this.deaths = 0;
+    this.deathFx = [];
+
     // Sound
     this.soundEnabled = false;
 
@@ -177,6 +190,9 @@ export class Simulation {
   initParticles() {
     this.rng = mulberry32(this.seed);
     this.particles = [];
+    this.births = 0;
+    this.deaths = 0;
+    this.deathFx.length = 0;
 
     // Compute per-type counts from percentages
     const counts = [];
@@ -245,6 +261,22 @@ export class Simulation {
     const matrix = this.matrix;
     const numTypes = this.numTypes;
 
+    // Life-cycle accumulators (per particle) — only active when life is on
+    const lifeOn = this.lifeEnabled;
+    if (lifeOn) {
+      if (!this._lifeBuf || this._lifeBuf.length < n) {
+        this._lifeBuf = new Float32Array(n);
+        this._feedBuf = new Float32Array(n);
+        this._contactBuf = new Float32Array(n);
+      }
+      this._lifeBuf.fill(0, 0, n);
+      this._feedBuf.fill(0, 0, n);
+      this._contactBuf.fill(0, 0, n);
+    }
+    const nCount = lifeOn ? this._lifeBuf : null;
+    const feed = lifeOn ? this._feedBuf : null;
+    const contact = lifeOn ? this._contactBuf : null;
+
     for (let i = 0; i < n; i++) {
       const p = particles[i];
       let fx = 0, fy = 0;
@@ -275,6 +307,14 @@ export class Simulation {
         fx += (dx / d) * f;
         fy += (dy / d) * f;
 
+        // Life-cycle accumulators: neighbor count, feeding (attraction),
+        // and close-contact cost
+        if (lifeOn) {
+          nCount[i]++;
+          if (strength > 0) feed[i] += f;
+          if (d < 5) contact[i] += (5 - d) / 5;
+        }
+
         // Separation — push apart when very close
         if (d < 5) {
           const sep = (5 - d) / 5 * 0.5;
@@ -300,6 +340,11 @@ export class Simulation {
       p.y += p.vy;
 
       this.wrapTorus(p);
+    }
+
+    if (lifeOn) {
+      this.lifeStep(dt, nCount, feed, contact);
+      this.updateDeathFx(dt);
     }
   }
 
@@ -352,6 +397,157 @@ export class Simulation {
         const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * -p.vy));
         if (p.y < la) { p.y = h - p.y; p.prevY = h - p.prevY; }
       }
+    }
+  }
+
+  /* ---- Life cycle: energy, death, reproduction ---- */
+  /**
+   * Life-cycle step, modeled on two well-known particle-life variants:
+   *
+   * 1. Energy/health — as in najarro.science/pl's "Energy" mode and
+   *    jkh2/Primordial-Sim:
+   *      E += feedRate · Σ(attractive interactions)
+   *           − energyDecay − collisionCost · Σ(close contacts)   [per sec]
+   *    A particle dies (is removed) when E reaches 0.
+   *
+   * 2. Reproduction — as in the Primordial Particle System (Schmickl &
+   *    Stefanec, A-Life Lab Graz): when a particle has enough neighbors
+   *    within the interaction radius and enough energy, it splits — the
+   *    child spawns between the parent and its neighbor centroid and the
+   *    two share the parent's energy 50/50. Population is capped.
+   */
+  lifeStep(dt, nCount, feed, contact) {
+    const particles = this.particles;
+    const decay = this.energyDecay;
+    const collision = this.collisionCost;
+    const feedRate = this.feedRate;
+    const reproN = this.reproNeighbors;
+    const reproE = this.reproEnergy;
+
+    const survivors = [];
+    const candidates = [];
+
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      p.age += dt;
+      if (p.reproCooldown > 0) p.reproCooldown -= dt;
+
+      p.energy += (feedRate * feed[i] - decay - collision * contact[i]) * dt;
+      if (p.energy > 1) p.energy = 1;
+
+      if (p.energy <= 0) {
+        this.deaths++;
+        this.spawnDeathFx(p);
+        if (this.soundEnabled) this.sound.playDeath();
+        continue; // starved — removed
+      }
+
+      if (nCount[i] >= reproN && p.energy >= reproE && p.reproCooldown <= 0) {
+        candidates.push(p);
+      }
+      survivors.push(p);
+    }
+
+    this.particles = survivors;
+
+    // Splits — limited by the population cap
+    let budget = this.maxParticles - survivors.length;
+    if (budget > 0) {
+      for (let c = 0; c < candidates.length && budget > 0; c++) {
+        if (this.spawnChild(candidates[c])) {
+          this.births++;
+          budget--;
+          if (this.soundEnabled) this.sound.playBirth();
+        }
+      }
+    }
+  }
+
+  /**
+   * PPS-style split: spawn a same-type child between the parent and its
+   * neighbor centroid; parent and child each keep 50% of the parent's
+   * energy. Returns true if a child was created.
+   */
+  spawnChild(parent) {
+    const radius = this.interactionRadius;
+    const neighbors = this.grid.getNeighbors(parent, radius);
+
+    // Centroid of the parent's neighbors within the interaction radius
+    let cx = 0, cy = 0, cnt = 0;
+    for (let j = 0; j < neighbors.length; j++) {
+      const q = neighbors[j];
+      if (q.type >= this.numTypes) continue;
+      let dx = q.x - parent.x;
+      let dy = q.y - parent.y;
+      if (this.wrap) {
+        if (dx > this.w * 0.5) dx -= this.w;
+        else if (dx < -this.w * 0.5) dx += this.w;
+        if (dy > this.h * 0.5) dy -= this.h;
+        else if (dy < -this.h * 0.5) dy += this.h;
+      }
+      const dSq = dx * dx + dy * dy;
+      if (dSq >= radius * radius || dSq < 0.01) continue;
+      cx += dx;
+      cy += dy;
+      cnt++;
+    }
+
+    let ox, oy;
+    if (cnt > 0) {
+      // Halfway between the parent and its neighbor centroid (the child
+      // splits off *inside* the cluster, like PPS)
+      ox = cx / cnt * 0.5;
+      oy = cy / cnt * 0.5;
+    } else {
+      const a = this.rng() * Math.PI * 2;
+      ox = Math.cos(a) * 10;
+      oy = Math.sin(a) * 10;
+    }
+    // Jitter so parent and child never perfectly overlap
+    ox += (this.rng() - 0.5) * 6;
+    oy += (this.rng() - 0.5) * 6;
+
+    const child = new Particle(parent.x + ox, parent.y + oy, parent.type, this.particles.length);
+    child.energy = parent.energy * 0.5;
+    parent.energy *= 0.5;
+    parent.reproCooldown = this.reproCooldown;
+    child.reproCooldown = this.reproCooldown;
+    const a = this.rng() * Math.PI * 2;
+    const s = this.rng() * 0.5;
+    child.vx = Math.cos(a) * s;
+    child.vy = Math.sin(a) * s;
+    this.wrapTorus(child);
+    this.particles.push(child);
+    return true;
+  }
+
+  /** Spawn a small fading burst where a particle died. */
+  spawnDeathFx(p) {
+    if (this.deathFx.length >= 400) return;
+    const n = 2;
+    for (let i = 0; i < n; i++) {
+      const a = this.rng() * Math.PI * 2;
+      const s = 0.2 + this.rng() * 0.6;
+      this.deathFx.push({
+        x: p.x, y: p.y,
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+        life: 0.8 + this.rng() * 0.2,
+        type: p.type,
+      });
+    }
+  }
+
+  /** Age and drift the death bursts; drop the expired ones. */
+  updateDeathFx(dt) {
+    const fx = this.deathFx;
+    for (let i = fx.length - 1; i >= 0; i--) {
+      const f = fx[i];
+      f.life -= dt * 1.6;
+      if (f.life <= 0) { fx.splice(i, 1); continue; }
+      f.x += f.vx;
+      f.y += f.vy;
+      f.vx *= 0.94;
+      f.vy *= 0.94;
     }
   }
 
@@ -478,6 +674,26 @@ export class Simulation {
       ctx.globalAlpha = 1;
     }
 
+    // --- Death bursts (life cycle) ---
+    if (this.lifeEnabled && this.deathFx.length > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < this.deathFx.length; i++) {
+        const f = this.deathFx[i];
+        const t = this.types[f.type];
+        if (!t) continue;
+        let sprite = this.glowSprites[f.type];
+        if (!sprite) sprite = this.glowSprites[f.type] = this.makeGlowSprite(t.color);
+        const r = t.size * this.glowSize * zoom * f.life;
+        const sx = (f.x - viewX) * zoom;
+        const sy = (f.y - viewY) * zoom;
+        if (sx + r < 0 || sx - r > this.w || sy + r < 0 || sy - r > this.h) continue;
+        ctx.globalAlpha = Math.min(0.6, f.life * 0.5);
+        ctx.drawImage(sprite, sx - r, sy - r, r * 2, r * 2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
     // Draw spatial grid in screen space (fixed line width, doesn't scale with zoom)
     if (this.showGrid) {
       ctx.save();
@@ -573,6 +789,16 @@ export class Simulation {
       matrix: this.matrix.map(r => [...r]),
       maxFps: this.maxFps,
       soundEnabled: this.soundEnabled ?? false,
+      life: {
+        enabled: this.lifeEnabled,
+        energyDecay: this.energyDecay,
+        collisionCost: this.collisionCost,
+        feedRate: this.feedRate,
+        reproNeighbors: this.reproNeighbors,
+        reproEnergy: this.reproEnergy,
+        maxParticles: this.maxParticles,
+        reproCooldown: this.reproCooldown,
+      },
     };
   }
 
@@ -590,6 +816,16 @@ export class Simulation {
     if (cfg.showVectors !== undefined) this.showVectors = cfg.showVectors;
     if (cfg.showGrid !== undefined) this.showGrid = cfg.showGrid;
     if (cfg.maxFps !== undefined) this.maxFps = +cfg.maxFps;
+    if (cfg.life) {
+      if (cfg.life.enabled !== undefined) this.lifeEnabled = cfg.life.enabled;
+      if (cfg.life.energyDecay !== undefined) this.energyDecay = +cfg.life.energyDecay;
+      if (cfg.life.collisionCost !== undefined) this.collisionCost = +cfg.life.collisionCost;
+      if (cfg.life.feedRate !== undefined) this.feedRate = +cfg.life.feedRate;
+      if (cfg.life.reproNeighbors !== undefined) this.reproNeighbors = +cfg.life.reproNeighbors;
+      if (cfg.life.reproEnergy !== undefined) this.reproEnergy = +cfg.life.reproEnergy;
+      if (cfg.life.maxParticles !== undefined) this.maxParticles = +cfg.life.maxParticles;
+      if (cfg.life.reproCooldown !== undefined) this.reproCooldown = +cfg.life.reproCooldown;
+    }
     if (cfg.types) this.types = cfg.types;
     if (cfg.matrix) this.matrix = cfg.matrix;
     if (cfg.soundEnabled !== undefined) {

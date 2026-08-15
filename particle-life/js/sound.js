@@ -483,6 +483,53 @@ export class SoundEngine {
     osc.stop(now + duration);
   }
 
+  /* ---- Life-cycle one-shots (birth / death) ---- */
+  /** Soft rising pop for a reproduction event. Rate-limited to 1/80 ms. */
+  playBirth() {
+    if (!this.initialized || !this.ctx) return;
+    const now = performance.now();
+    if (now - (this._lastLifeSound || 0) < 80) return;
+    this._lastLifeSound = now;
+    if (!this._claimSoundSlot()) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(480, t);
+    osc.frequency.exponentialRampToValueAtTime(880, t + 0.08);
+    gain.gain.setValueAtTime(0.025, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.13);
+    setTimeout(() => this._releaseSoundSlot(), 140);
+  }
+
+  /** Low falling thud for a death event. Rate-limited to 1/80 ms. */
+  playDeath() {
+    if (!this.initialized || !this.ctx) return;
+    const now = performance.now();
+    if (now - (this._lastLifeSound || 0) < 80) return;
+    this._lastLifeSound = now;
+    if (!this._claimSoundSlot()) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(140, t);
+    osc.frequency.exponentialRampToValueAtTime(50, t + 0.18);
+    gain.gain.setValueAtTime(0.04, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.23);
+    setTimeout(() => this._releaseSoundSlot(), 240);
+  }
+
   /**
    * Call this to initialize audio on user gesture (required by browsers).
    * Attach to a button click or similar.

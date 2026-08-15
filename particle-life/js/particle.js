@@ -11,5 +11,10 @@ export class Particle {
     this.vy = 0;
     this.type = type;
     this._index = index;
+
+    // Life cycle (reproduction & death) — see Simulation.lifeStep()
+    this.energy = 1;        // 0..1 — particle dies when this reaches 0
+    this.age = 0;           // seconds alive
+    this.reproCooldown = 0; // seconds until this particle may split again
   }
 }

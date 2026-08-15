@@ -16,6 +16,7 @@
       <div id="fps-display">FPS: --</div>
       <div id="count-display">Particles: --</div>
       <div id="zoom-display">Zoom: 1.0x</div>
+      <div id="life-display" style="display:none">Births: 0 · Deaths: 0</div>
     </div>
   </div>
 
@@ -85,7 +86,50 @@
       </div>
     </div>
 
-    <!-- ====== 4. VISUALS ====== -->
+    <!-- ====== 4. LIFE & DEATH ====== -->
+    <div class="section">
+      <div class="section-title">Life &amp; Death</div>
+      <label class="check-row">
+        <input type="checkbox" id="c-life"> Life cycle (reproduce &amp; die)
+      </label>
+      <div class="slider-row">
+        <label>Energy decay</label>
+        <input type="range" id="s-decay" min="0" max="0.2" step="0.005" value="0.03">
+        <span class="val" id="v-decay">0.030</span>
+      </div>
+      <div class="slider-row">
+        <label>Collision cost</label>
+        <input type="range" id="s-collision" min="0" max="0.5" step="0.01" value="0.10">
+        <span class="val" id="v-collision">0.10</span>
+      </div>
+      <div class="slider-row">
+        <label>Feeding</label>
+        <input type="range" id="s-feed" min="0" max="0.2" step="0.005" value="0.06">
+        <span class="val" id="v-feed">0.060</span>
+      </div>
+      <div class="slider-row">
+        <label>Repro neighbors</label>
+        <input type="range" id="s-repro-n" min="1" max="12" step="1" value="3">
+        <span class="val" id="v-repro-n">3</span>
+      </div>
+      <div class="slider-row">
+        <label>Repro energy</label>
+        <input type="range" id="s-repro-e" min="0.5" max="1" step="0.05" value="0.80">
+        <span class="val" id="v-repro-e">0.80</span>
+      </div>
+      <div class="slider-row">
+        <label>Max particles</label>
+        <input type="range" id="s-maxp" min="500" max="8000" step="100" value="5000">
+        <span class="val" id="v-maxp">5000</span>
+      </div>
+      <div class="slider-row">
+        <label>Repro cooldown</label>
+        <input type="range" id="s-cooldown" min="1" max="20" step="1" value="5">
+        <span class="val" id="v-cooldown">5</span>
+      </div>
+    </div>
+
+    <!-- ====== 5. VISUALS ====== -->
     <div class="section">
       <div class="section-title">Visuals</div>
       <div class="slider-row">
@@ -118,7 +162,7 @@
       </label>
     </div>
 
-    <!-- ====== 5. EXPORT / IMPORT ====== -->
+    <!-- ====== 6. EXPORT / IMPORT ====== -->
     <div class="section">
       <div class="section-title">Export / Import</div>
       <div class="btn-row">
