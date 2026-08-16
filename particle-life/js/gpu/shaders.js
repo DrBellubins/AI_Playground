@@ -457,8 +457,8 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
     out.pos = vec4f(
-        screenPos.x * (2.0 / camera.canvasW) - 1.0,
-        1.0 - screenPos.y * (2.0 / camera.canvasH),
+        screenPos.x * (2.0 / camera.worldW) - 1.0,
+        screenPos.y * (2.0 / camera.worldH) - 1.0,
         0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, 1.0);
@@ -521,7 +521,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     // World -> NDC over the world-sized trail texture (no camera).
     out.pos = vec4f(
         worldPos.x * (2.0 / camera.worldW) - 1.0,
-        1.0 - worldPos.y * (2.0 / camera.worldH),
+        worldPos.y * (2.0 / camera.worldH) - 1.0,
         0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, 1.0);
@@ -581,8 +581,8 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
     out.pos = vec4f(
-        screenPos.x * (2.0 / camera.canvasW) - 1.0,
-        1.0 - screenPos.y * (2.0 / camera.canvasH),
+        screenPos.x * (2.0 / camera.worldW) - 1.0,
+        screenPos.y * (2.0 / camera.worldH) - 1.0,
         0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, glowParams.y);
@@ -627,7 +627,12 @@ fn vs(@builtin(vertex_index) vid: u32) -> VertexOut {
 
 @fragment
 fn fs(v: VertexOut) -> @location(0) vec4f {
-    let worldPos = v.pos.xy / camera.zoom + vec2f(camera.viewX, camera.viewY);
+    // v.pos.xy is the fragment position in PHYSICAL (device-pixel) canvas
+    // coords, but world/camera math is in LOGICAL (CSS) units. Convert
+    // physical -> logical via worldSize / physicalCanvasSize (= 1/dpr) so the
+    // trail lines up with the screen-space particles at every pixel ratio.
+    let logicalPx = v.pos.xy * (vec2f(camera.worldW, camera.worldH) / vec2f(camera.canvasW, camera.canvasH));
+    let worldPos = logicalPx / camera.zoom + vec2f(camera.viewX, camera.viewY);
     let uv = worldPos / vec2f(camera.worldW, camera.worldH);
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec4f(bgColor.rgb, 1.0);
@@ -665,8 +670,8 @@ fn vs(v: VertexIn) -> VertexOut {
     var out: VertexOut;
     let screenPos = (v.pos - vec2f(cam.viewX, cam.viewY)) * cam.zoom;
     out.pos = vec4f(
-        screenPos.x * (2.0 / cam.canvasW) - 1.0,
-        1.0 - screenPos.y * (2.0 / cam.canvasH),
+        screenPos.x * (2.0 / cam.worldW) - 1.0,
+        screenPos.y * (2.0 / cam.worldH) - 1.0,
         0.0, 1.0);
     out.color = v.color;
     return out;
@@ -726,8 +731,8 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
     out.pos = vec4f(
-        screenPos.x * (2.0 / camera.canvasW) - 1.0,
-        1.0 - screenPos.y * (2.0 / camera.canvasH),
+        screenPos.x * (2.0 / camera.worldW) - 1.0,
+        screenPos.y * (2.0 / camera.worldH) - 1.0,
         0.0, 1.0);
     out.offset = c;
     let alpha = min(0.6, fx.life * 0.5);
