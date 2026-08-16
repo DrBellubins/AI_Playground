@@ -267,7 +267,7 @@ export class WebGPUEngine {
         this.circlePipeline = d.createRenderPipeline({
             layout: 'auto',
             vertex: { module: circleModule, entryPoint: 'vs' },
-            fragment: { module: circleModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm', blend: { color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
+            fragment: { module: circleModule, entryPoint: 'fs', targets: [{ format: this.canvasFormat, blend: { color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
             primitive: { topology: 'triangle-list' },
         });
 
