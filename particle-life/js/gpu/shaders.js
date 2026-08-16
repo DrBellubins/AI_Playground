@@ -458,7 +458,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 
     out.pos = vec4f(
         screenPos.x * (2.0 / camera.worldW) - 1.0,
-        screenPos.y * (2.0 / camera.worldH) - 1.0,
+        1.0 - screenPos.y * (2.0 / camera.worldH),
         0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, 1.0);
@@ -534,7 +534,10 @@ fn fs(v: VertexOut) -> @location(0) vec4f {
     if (d > 1.0) { discard; }
     let aa = 0.2;
     let alpha = smoothstep(1.0, 1.0 - aa, d);
-    return vec4f(v.color.rgb, alpha);
+    // Premultiply the disc color by its alpha so the additive (one,one) blend
+    // lays down a soft, color-faithful trail instead of a hard full-color disc
+    // that blows out to white where particles cluster.
+    return vec4f(v.color.rgb * alpha, alpha);
 }
 `;
 
@@ -582,7 +585,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 
     out.pos = vec4f(
         screenPos.x * (2.0 / camera.worldW) - 1.0,
-        screenPos.y * (2.0 / camera.worldH) - 1.0,
+        1.0 - screenPos.y * (2.0 / camera.worldH),
         0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, glowParams.y);
@@ -671,7 +674,7 @@ fn vs(v: VertexIn) -> VertexOut {
     let screenPos = (v.pos - vec2f(cam.viewX, cam.viewY)) * cam.zoom;
     out.pos = vec4f(
         screenPos.x * (2.0 / cam.worldW) - 1.0,
-        screenPos.y * (2.0 / cam.worldH) - 1.0,
+        1.0 - screenPos.y * (2.0 / cam.worldH),
         0.0, 1.0);
     out.color = v.color;
     return out;
@@ -732,7 +735,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 
     out.pos = vec4f(
         screenPos.x * (2.0 / camera.worldW) - 1.0,
-        screenPos.y * (2.0 / camera.worldH) - 1.0,
+        1.0 - screenPos.y * (2.0 / camera.worldH),
         0.0, 1.0);
     out.offset = c;
     let alpha = min(0.6, fx.life * 0.5);
