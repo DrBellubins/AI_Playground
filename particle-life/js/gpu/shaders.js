@@ -22,14 +22,14 @@ struct SimParams {
     numTypes: f32, gridW: f32, gridH: f32,
     cellSize: f32, maxParticles: f32,
     trail: f32,
-    _pad: array<f32, 4>,
+    _pad0: f32, _pad1: f32, _pad2: f32, _pad3: f32,
 };
 
 struct Camera {
     viewX: f32, viewY: f32, zoom: f32,
     worldW: f32, worldH: f32,
     canvasW: f32, canvasH: f32,
-    _pad: array<f32, 2>,
+    _pad0: f32, _pad1: f32,
 };
 
 struct TypeInfo {
@@ -47,7 +47,7 @@ struct PSParams {
 struct SpawnReq {
     x: f32, y: f32, vx: f32, vy: f32,
     ptype: f32, energy: f32, age: f32, cooldown: f32,
-    target: f32, valid: f32,
+    targetSlot: f32, valid: f32,
 };
 `;
 
@@ -320,8 +320,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Spawn request (defaults to invalid — written every frame, resolved in a
     // separate pass so no two threads ever write the same output slot).
-    var reqX = nx, reqY = ny, reqVX = 0.0, reqVY = 0.0;
-    var reqPType = p.ptype, reqEnergy = 0.0, reqTarget = 0.0, reqValid = 0.0;
+    var reqX = nx;
+    var reqY = ny;
+    var reqVX = 0.0;
+    var reqVY = 0.0;
+    var reqPType = p.ptype;
+    var reqEnergy = 0.0;
+    var reqTarget = 0.0;
+    var reqValid = 0.0;
 
     if (lifeOn) {
         newEnergy = p.energy + (params.feedRate * feed - params.energyDecay - params.collisionCost * contact) * dt;
@@ -385,11 +391,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (i >= u32(params.maxParticles)) { return; }
     let req = spawnReq[i];
     if (req.valid < 0.5) { return; }
-    let slot = u32(req.target);
+    let slot = u32(req.targetSlot);
     outParticles[slot] = Particle(
         req.x, req.y, req.x, req.y,
         req.vx, req.vy, req.ptype, req.energy,
-        0.0, params.reproCooldown, 1.0, req.target
+        0.0, params.reproCooldown, 1.0, req.targetSlot
     );
 }
 `;
@@ -404,7 +410,7 @@ ${FS_QUAD_VS}
 @group(0) @binding(2) var<uniform> fadeFactor: f32;
 
 @fragment
-fn fs(v: VertexOut) -> vec4f {
+fn fs(v: VertexOut) -> @location(0) vec4f {
     let color = textureSample(trailTex, trailSampler, v.uv).rgb;
     return vec4f(color * fadeFactor, 1.0);
 }
@@ -460,7 +466,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 }
 
 @fragment
-fn fs(v: VertexOut) -> vec4f {
+fn fs(v: VertexOut) -> @location(0) vec4f {
     let d = length(v.offset);
     if (d > 1.0) { discard; }
     let aa = 1.5 / max(1.0, camera.zoom);
@@ -523,7 +529,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 }
 
 @fragment
-fn fs(v: VertexOut) -> vec4f {
+fn fs(v: VertexOut) -> @location(0) vec4f {
     let d = length(v.offset);
     if (d > 1.0) { discard; }
     let aa = 0.2;
@@ -584,7 +590,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 }
 
 @fragment
-fn fs(v: VertexOut) -> vec4f {
+fn fs(v: VertexOut) -> @location(0) vec4f {
     let d = length(v.offset);
     if (d > 1.0) { discard; }
     let alpha = exp(-6.0 * d * d) / 64.0;
@@ -620,8 +626,8 @@ fn vs(@builtin(vertex_index) vid: u32) -> VertexOut {
 }
 
 @fragment
-fn fs(@builtin(frag_coord) fc: vec4f, v: VertexOut) -> vec4f {
-    let worldPos = fc.xy / camera.zoom + vec2f(camera.viewX, camera.viewY);
+fn fs(v: VertexOut) -> @location(0) vec4f {
+    let worldPos = v.pos.xy / camera.zoom + vec2f(camera.viewX, camera.viewY);
     let uv = worldPos / vec2f(camera.worldW, camera.worldH);
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec4f(bgColor.rgb, 1.0);
@@ -649,7 +655,7 @@ struct Camera_simple {
     viewX: f32, viewY: f32, zoom: f32,
     worldW: f32, worldH: f32,
     canvasW: f32, canvasH: f32,
-    _pad: array<f32, 2>,
+    _pad0: f32, _pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera_simple;
@@ -667,7 +673,7 @@ fn vs(v: VertexIn) -> VertexOut {
 }
 
 @fragment
-fn fs(v: VertexOut) -> vec4f {
+fn fs(v: VertexOut) -> @location(0) vec4f {
     return v.color;
 }
 `;
@@ -730,7 +736,7 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 }
 
 @fragment
-fn fs(v: VertexOut) -> vec4f {
+fn fs(v: VertexOut) -> @location(0) vec4f {
     let d = length(v.offset);
     if (d > 1.0) { discard; }
     let alpha = exp(-6.0 * d * d) / 64.0;

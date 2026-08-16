@@ -71,7 +71,9 @@ export class WebGPUEngine {
         try {
             const adapter = await navigator.gpu.requestAdapter();
             if (!adapter) return false;
-            this.device = await adapter.requestDevice();
+            this.device = await adapter.requestDevice({
+                requiredLimits: { maxStorageBuffersPerShaderStage: 12 }
+            });
             this.queue = this.device.queue;
             this.canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
