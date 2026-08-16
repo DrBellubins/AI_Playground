@@ -78,7 +78,7 @@ globalThis.document = {
   createElement: (tag) => makeCanvas(),
   getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
 };
-globalThis.navigator = { gpu: undefined, userAgent: 'node' }; // no WebGPU → CPU path
+Object.defineProperty(globalThis, 'navigator', { value: { gpu: undefined, userAgent: 'node' }, configurable: true, writable: true }); // no WebGPU → CPU path
 globalThis.AudioContext = AudioContext;
 globalThis.performance = { now: () => Date.now() };
 let rafQ = [];
@@ -107,7 +107,7 @@ console.log('== TEST 1: CPU fallback path ==');
   const p = sim.particles[0];
   assert.ok(typeof p.x === 'number' && !Number.isNaN(p.x), 'particle x is a number');
   // grid should be built
-  assert.ok(sim.grid.cols >= 1, 'grid built');
+  assert.ok(sim.grid.cells.size > 0, 'grid built');
   console.log('   CPU: particles=', sim.particles.length,
               'x=', p.x.toFixed(2), 'y=', p.y.toFixed(2),
               'v=', Math.hypot(p.vx, p.vy).toFixed(3), 'OK');
@@ -116,10 +116,12 @@ console.log('== TEST 1: CPU fallback path ==');
 // =====================================================================
 console.log('== TEST 2: GPU path (fake engine) ==');
 {
-  // A faithful-ish fake engine: ping-pong data, kills one, births one.
+  // Faithful fake engine: models the real 8000-slot buffer (1200 alive, rest
+  // dead with id=slot). Each compute kills slot 0 (id 0) and spawns a child into
+  // a genuinely-dead slot (1200) with a fresh id (99).
   class FakeGpu {
     constructor() {
-      this.maxParticles = 64;
+      this.maxParticles = 8000;
       this._data = new Float32Array(this.maxParticles * 12);
       this.computeCalls = 0; this.renderCalls = 0; this.paramsSet = 0;
       for (let i = 0; i < this.maxParticles; i++) this._data[i * 12 + 11] = i; // id = slot
@@ -139,10 +141,9 @@ console.log('== TEST 2: GPU path (fake engine) ==');
     }
     submitCompute() {
       this.computeCalls++;
-      // kill slot 0 (id 0), birth: slot 64-1? keep in bounds → slot 5 alive id 99
-      this._data[0 * 12 + 10] = 0;               // kill id 0
-      const o = 5 * 12;                           // spawn at slot 5
-      this._data[o] = 200; this._data[o + 1] = 200; this._data[o + 10] = 1; this._data[o + 11] = 99;
+      this._data[0 * 12 + 10] = 0;               // kill slot 0 (id 0)
+      const o = 1200 * 12;                        // spawn into a dead slot (id = slot, like the real engine)
+      this._data[o] = 200; this._data[o + 1] = 200; this._data[o + 10] = 1; this._data[o + 11] = 1200;
     }
     submitRender() { this.renderCalls++; }
     async readParticles() { return new Float32Array(this._data); }
@@ -177,9 +178,9 @@ console.log('== TEST 2: GPU path (fake engine) ==');
   assert.strictEqual(sim.births, 1, 'one birth detected');
   assert.ok(sim.deathFx.length > 0, 'death FX spawned from readback');
   assert.ok(!sim._prevAlive.has(0), 'id 0 no longer alive');
-  assert.ok(sim._prevAlive.has(99), 'id 99 alive');
-  const id99 = sim.particles.find((p) => p._index === 99);
-  assert.ok(id99 && id99.x === 200 && id99.y === 200, 'id99 mirror has readback position');
+  assert.ok(sim._prevAlive.has(1200), 'id 1200 alive');
+  const id1200 = sim.particles.find((p) => p._index === 1200);
+  assert.ok(id1200 && id1200.x === 200 && id1200.y === 200, 'id1200 mirror has readback position');
   console.log('   GPU: particles=', sim.particles.length,
               'deaths=', sim.deaths, 'births=', sim.births,
               'deathFx=', sim.deathFx.length, 'compute=', sim.gpu.computeCalls, 'render=', sim.gpu.renderCalls, 'OK');

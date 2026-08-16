@@ -40,6 +40,15 @@ struct PSParams {
     stepSize: u32,
     count: u32,
 };
+
+// A reproduction request recorded by a parent particle, resolved into a free
+// slot in a SEPARATE pass (so the parent thread and the free slot's own thread
+// never both write the same output slot — that would be a write race).
+struct SpawnReq {
+    x: f32, y: f32, vx: f32, vy: f32,
+    ptype: f32, energy: f32, age: f32, cooldown: f32,
+    target: f32, valid: f32,
+};
 `;
 
 // ====== Fullscreen quad vertex shader (shared) ======
@@ -174,9 +183,10 @@ ${COMMON}
 @group(0) @binding(3) var<storage, read> binOffsets: array<u32>;
 @group(0) @binding(4) var<uniform> params: SimParams;
 @group(0) @binding(5) var<storage, read> matrix: array<f32>;
-@group(0) @binding(6) var<storage, read_write> freeList: array<u32>;
-@group(0) @binding(7) var<storage, read_write> freeCount: atomic<u32>;
+@group(0) @binding(6) var<storage, read> freeList: array<u32>;
+@group(0) @binding(7) var<storage, read> freeCount: atomic<u32>;
 @group(0) @binding(8) var<storage, read_write> freeHead: atomic<u32>;
+@group(0) @binding(9) var<storage, read_write> spawnReq: array<SpawnReq>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -186,6 +196,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let p = particles[i];
     if (p.alive < 0.5) {
         outParticles[i] = p;
+        // Write an invalid spawn request (otherwise a stale valid flag from a
+        // previous frame would make SPAWN_RESOLVE respawn into this slot).
+        spawnReq[i] = SpawnReq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         return;
     }
 
@@ -305,47 +318,47 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var newAge = p.age + dt;
     var newCooldown = max(0.0, p.reproCooldown - dt);
 
+    // Spawn request (defaults to invalid — written every frame, resolved in a
+    // separate pass so no two threads ever write the same output slot).
+    var reqX = nx, reqY = ny, reqVX = 0.0, reqVY = 0.0;
+    var reqPType = p.ptype, reqEnergy = 0.0, reqTarget = 0.0, reqValid = 0.0;
+
     if (lifeOn) {
         newEnergy = p.energy + (params.feedRate * feed - params.energyDecay - params.collisionCost * contact) * dt;
         if (newEnergy > 1.0) { newEnergy = 1.0; }
 
         if (newEnergy <= 0.0) {
             newAlive = 0.0;
-            let fIdx = atomicAdd(&freeCount, 1u);
-            if (fIdx < u32(params.maxParticles)) {
-                freeList[fIdx] = i;
-            }
+            // Newly-dead slots enter the free list on the NEXT frame's binCount.
         } else if (nCount >= u32(params.reproNeighbors) && newEnergy >= params.reproEnergy && newCooldown <= 0.0) {
             let hIdx = atomicAdd(&freeHead, 1u);
             let fc = atomicLoad(&freeCount);
             if (hIdx < fc) {
                 let slot = freeList[hIdx];
                 let parentEnergy = newEnergy * 0.5;
-                var child = Particle(
-                    nx, ny, nx, ny,
-                    0.0, 0.0, p.ptype, parentEnergy,
-                    0.0, params.reproCooldown, 1.0, f32(slot)
-                );
                 // Deterministic pseudo-random jitter based on slot index
                 let a = f32(slot % 628u) / 100.0 * 6.2831853;
                 let s = f32((slot * 7u + 3u) % 50u) / 100.0;
-                child.x = nx + cos(a) * s * 10.0;
-                child.y = ny + sin(a) * s * 10.0;
-                child.prevX = child.x;
-                child.prevY = child.y;
-                child.vx = cos(a) * s;
-                child.vy = sin(a) * s;
+                reqX = nx + cos(a) * s * 10.0;
+                reqY = ny + sin(a) * s * 10.0;
                 if (wrapOn) {
-                    if (child.x < 0.0) { child.x += worldW; }
-                    else if (child.x >= worldW) { child.x -= worldW; }
-                    if (child.y < 0.0) { child.y += worldH; }
-                    else if (child.y >= worldH) { child.y -= worldH; }
+                    if (reqX < 0.0) { reqX += worldW; }
+                    else if (reqX >= worldW) { reqX -= worldW; }
+                    if (reqY < 0.0) { reqY += worldH; }
+                    else if (reqY >= worldH) { reqY -= worldH; }
                 }
-                outParticles[slot] = child;
+                reqVX = cos(a) * s;
+                reqVY = sin(a) * s;
+                reqPType = p.ptype;
+                reqEnergy = parentEnergy;
+                reqTarget = f32(slot);
+                reqValid = 1.0;
                 newEnergy = parentEnergy;
             }
         }
     }
+
+    spawnReq[i] = SpawnReq(reqX, reqY, reqVX, reqVY, reqPType, reqEnergy, 0.0, params.reproCooldown, reqTarget, reqValid);
 
     outParticles[i] = Particle(
         nx, ny, nprevX, nprevY,
@@ -355,15 +368,36 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+// ====== Compute: spawnResolve ======
+// Materializes pending spawn requests into free slots. Runs AFTER computeAll in
+// its own dispatch: each free slot is written by exactly one thread, so there
+// is no write race. The child's id is the slot index (guaranteed unique because
+// the slot was dead when the request was made).
+export const SPAWN_RESOLVE = /* wgsl */`
+${COMMON}
+@group(0) @binding(0) var<storage, read> spawnReq: array<SpawnReq>;
+@group(0) @binding(1) var<storage, read_write> outParticles: array<Particle>;
+@group(0) @binding(2) var<uniform> params: SimParams;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+    let i = gid.x;
+    if (i >= u32(params.maxParticles)) { return; }
+    let req = spawnReq[i];
+    if (req.valid < 0.5) { return; }
+    let slot = u32(req.target);
+    outParticles[slot] = Particle(
+        req.x, req.y, req.x, req.y,
+        req.vx, req.vy, req.ptype, req.energy,
+        0.0, params.reproCooldown, 1.0, req.target
+    );
+}
+`;
+
 // ====== Render: trailFade ======
 // Fullscreen quad that fades the trail texture by a factor.
 export const TRAIL_FADE = /* wgsl */`
 ${FS_QUAD_VS}
-
-struct VertexOut {
-    @builtin(position) pos: vec4f,
-    @location(0) uv: vec2f,
-};
 
 @group(0) @binding(0) var trailTex: texture_2d<f32>;
 @group(0) @binding(1) var trailSampler: sampler;
@@ -416,7 +450,10 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let worldPos = vec2f(p.x, p.y) + c * ti.size;
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
-    out.pos = vec4f(screenPos, 0.0, 1.0);
+    out.pos = vec4f(
+        screenPos.x * (2.0 / camera.canvasW) - 1.0,
+        1.0 - screenPos.y * (2.0 / camera.canvasH),
+        0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, 1.0);
     return out;
@@ -427,6 +464,69 @@ fn fs(v: VertexOut) -> vec4f {
     let d = length(v.offset);
     if (d > 1.0) { discard; }
     let aa = 1.5 / max(1.0, camera.zoom);
+    let alpha = smoothstep(1.0, 1.0 - aa, d);
+    return vec4f(v.color.rgb, alpha);
+}
+`;
+
+// ====== Render: circle for the trail texture (world-locked) ======
+// Same disc as CIRCLE but drawn in WORLD space into the world-sized trail
+// texture (independent of the camera), so accumulated trails stay fixed in
+// world space while zooming/panning. The composite applies the camera when
+// reading the trail back to the screen.
+export const CIRCLE_TRAIL = /* wgsl */`
+${COMMON}
+
+struct VertexOut {
+    @builtin(position) pos: vec4f,
+    @location(0) offset: vec2f,
+    @location(1) color: vec4f,
+};
+
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<uniform> camera: Camera;
+@group(0) @binding(2) var<uniform> typeInfo: array<TypeInfo, 16>;
+
+const corners = array<vec2f, 6>(
+    vec2f(-1.0, -1.0),
+    vec2f( 1.0, -1.0),
+    vec2f(-1.0,  1.0),
+    vec2f(-1.0,  1.0),
+    vec2f( 1.0, -1.0),
+    vec2f( 1.0,  1.0),
+);
+
+@vertex
+fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> VertexOut {
+    let p = particles[iid];
+    var out: VertexOut;
+
+    if (p.alive < 0.5) {
+        out.pos = vec4f(-10000.0, -10000.0, 0.0, 1.0);
+        out.offset = vec2f(0.0);
+        out.color = vec4f(0.0);
+        return out;
+    }
+
+    let c = corners[vid];
+    let ti = typeInfo[u32(p.ptype)];
+    let worldPos = vec2f(p.x, p.y) + c * ti.size;
+
+    // World -> NDC over the world-sized trail texture (no camera).
+    out.pos = vec4f(
+        worldPos.x * (2.0 / camera.worldW) - 1.0,
+        1.0 - worldPos.y * (2.0 / camera.worldH),
+        0.0, 1.0);
+    out.offset = c;
+    out.color = vec4f(ti.r, ti.g, ti.b, 1.0);
+    return out;
+}
+
+@fragment
+fn fs(v: VertexOut) -> vec4f {
+    let d = length(v.offset);
+    if (d > 1.0) { discard; }
+    let aa = 0.2;
     let alpha = smoothstep(1.0, 1.0 - aa, d);
     return vec4f(v.color.rgb, alpha);
 }
@@ -474,7 +574,10 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let worldPos = vec2f(p.x, p.y) + c * size;
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
-    out.pos = vec4f(screenPos, 0.0, 1.0);
+    out.pos = vec4f(
+        screenPos.x * (2.0 / camera.canvasW) - 1.0,
+        1.0 - screenPos.y * (2.0 / camera.canvasH),
+        0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, glowParams.y);
     return out;
@@ -542,8 +645,6 @@ struct VertexOut {
     @location(0) color: vec4f,
 };
 
-@group(0) @binding(0) var<uniform> cam: Camera_simple;
-
 struct Camera_simple {
     viewX: f32, viewY: f32, zoom: f32,
     worldW: f32, worldH: f32,
@@ -551,11 +652,16 @@ struct Camera_simple {
     _pad: array<f32, 2>,
 };
 
+@group(0) @binding(0) var<uniform> cam: Camera_simple;
+
 @vertex
 fn vs(v: VertexIn) -> VertexOut {
     var out: VertexOut;
     let screenPos = (v.pos - vec2f(cam.viewX, cam.viewY)) * cam.zoom;
-    out.pos = vec4f(screenPos, 0.0, 1.0);
+    out.pos = vec4f(
+        screenPos.x * (2.0 / cam.canvasW) - 1.0,
+        1.0 - screenPos.y * (2.0 / cam.canvasH),
+        0.0, 1.0);
     out.color = v.color;
     return out;
 }
@@ -613,7 +719,10 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let worldPos = vec2f(fx.x, fx.y) + c * size;
     let screenPos = (worldPos - vec2f(camera.viewX, camera.viewY)) * camera.zoom;
 
-    out.pos = vec4f(screenPos, 0.0, 1.0);
+    out.pos = vec4f(
+        screenPos.x * (2.0 / camera.canvasW) - 1.0,
+        1.0 - screenPos.y * (2.0 / camera.canvasH),
+        0.0, 1.0);
     out.offset = c;
     let alpha = min(0.6, fx.life * 0.5);
     out.color = vec4f(ti.r, ti.g, ti.b, alpha);

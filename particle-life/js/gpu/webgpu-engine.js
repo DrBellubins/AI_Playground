@@ -9,8 +9,8 @@
  *   - Particle data readback for CPU-side logic (sound, death FX spawning)
  */
 import {
-    BIN_CLEAR, BIN_COUNT, PREFIX_SUM, BIN_SORT, COMPUTE_ALL,
-    TRAIL_FADE, CIRCLE, GLOW, COMPOSITE, LINE_SIMPLE, DEATH_FX,
+    BIN_CLEAR, BIN_COUNT, PREFIX_SUM, BIN_SORT, COMPUTE_ALL, SPAWN_RESOLVE,
+    TRAIL_FADE, CIRCLE, CIRCLE_TRAIL, GLOW, COMPOSITE, LINE_SIMPLE, DEATH_FX,
 } from './shaders.js';
 
 const PARTICLE_FLOATS = 12; // x,y,prevX,prevY,vx,vy,type,energy,age,reproCooldown,alive,id
@@ -117,6 +117,9 @@ export class WebGPUEngine {
         this.freeListBuf = d.createBuffer({ size: MAX_PARTICLES * 4, usage: GPUBufferUsage.STORAGE });
         this.freeCountBuf = d.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });
         this.freeHeadBuf = d.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });
+        // Spawn requests (SpawnReq = 10 floats each), one per slot, resolved in a
+        // separate dispatch to avoid a write race between parent and free slot.
+        this.spawnReqBuf = d.createBuffer({ size: MAX_PARTICLES * 10 * 4, usage: GPUBufferUsage.STORAGE });
 
         // Uniforms
         this.paramsBuf = d.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -241,6 +244,11 @@ export class WebGPUEngine {
             compute: { module: d.createShaderModule({ code: COMPUTE_ALL }), entryPoint: 'main' },
         });
 
+        this.spawnResolvePipeline = d.createComputePipeline({
+            layout: 'auto',
+            compute: { module: d.createShaderModule({ code: SPAWN_RESOLVE }), entryPoint: 'main' },
+        });
+
         // --- Render pipelines ---
         const noBlend = { color: { format: this.canvasFormat, alphaMode: 'opaque' } };
 
@@ -261,11 +269,12 @@ export class WebGPUEngine {
             primitive: { topology: 'triangle-list' },
         });
 
-        // Circle for trail (additive blending onto trail texture)
+        // Circle for trail (additive blending onto the world-locked trail texture)
+        const circleTrailModule = d.createShaderModule({ code: CIRCLE_TRAIL });
         this.circleTrailPipeline = d.createRenderPipeline({
             layout: 'auto',
-            vertex: { module: circleModule, entryPoint: 'vs' },
-            fragment: { module: circleModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm', blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one' }, alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one' } } }] },
+            vertex: { module: circleTrailModule, entryPoint: 'vs' },
+            fragment: { module: circleTrailModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm', blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one' }, alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one' } } }] },
             primitive: { topology: 'triangle-list' },
         });
 
@@ -563,6 +572,23 @@ export class WebGPUEngine {
                     { binding: 6, resource: { buffer: this.freeListBuf } },
                     { binding: 7, resource: { buffer: this.freeCountBuf } },
                     { binding: 8, resource: { buffer: this.freeHeadBuf } },
+                    { binding: 9, resource: { buffer: this.spawnReqBuf } },
+                ],
+            }));
+            pass.dispatchWorkgroups(wgCount);
+            pass.end();
+        }
+
+        // 5b. Resolve spawn requests into free slots (race-free).
+        {
+            const pass = encoder.beginComputePass();
+            pass.setPipeline(this.spawnResolvePipeline);
+            pass.setBindGroup(0, d.createBindGroup({
+                layout: this.spawnResolvePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: this.spawnReqBuf } },
+                    { binding: 1, resource: { buffer: outBuf } },
+                    { binding: 2, resource: { buffer: this.paramsBuf } },
                 ],
             }));
             pass.dispatchWorkgroups(wgCount);
@@ -595,8 +621,6 @@ export class WebGPUEngine {
         const curBuf = this.currentBuf === 'A' ? this.particleBufA : this.particleBufB;
         const numParticles = this.maxParticles;
         const trailOn = opts.trail > 0;
-        const trailCurrentTex = this.trailCurrent === 'A' ? this.trailTexA : this.trailTexB;
-        const trailOtherTex = this.trailCurrent === 'A' ? this.trailTexB : this.trailTexA;
         const trailCurrentView = this.trailCurrent === 'A' ? this.trailViewA : this.trailViewB;
         const trailOtherView = this.trailCurrent === 'A' ? this.trailViewB : this.trailViewA;
 
@@ -672,10 +696,14 @@ export class WebGPUEngine {
                 }],
             });
             pass.setPipeline(this.compositePipeline);
+            // Read the CURRENT trail (post-swap in the trailOn case, the just-
+            // cleared one in the trailOff case). Reading the pre-swap view here
+            // would show a stale trail from the previous frame.
+            const currentTrailView = this.trailCurrent === 'A' ? this.trailViewA : this.trailViewB;
             pass.setBindGroup(0, d.createBindGroup({
                 layout: this.compositePipeline.getBindGroupLayout(0),
                 entries: [
-                    { binding: 0, resource: trailCurrentView },
+                    { binding: 0, resource: currentTrailView },
                     { binding: 1, resource: this.trailSampler },
                     { binding: 2, resource: { buffer: this.cameraBuf } },
                     { binding: 3, resource: { buffer: this.bgColorBuf } },
