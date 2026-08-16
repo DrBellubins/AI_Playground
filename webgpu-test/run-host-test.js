@@ -9,7 +9,7 @@ const { chromium } = require('playwright');
   const browser = await chromium.launch({
     headless: false, // headful → uses your Wayland session + real GPU
     channel: 'chromium',
-    args: ['--use-gl=angle', '--use-angle=vulkan']
+    args: ['--use-gl=angle', '--use-angle=vulkan', '--enable-unsafe-webgpu']
   });
   const page = await browser.newPage();
   await page.setContent('<div id="r">pending</div>');
