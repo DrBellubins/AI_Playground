@@ -276,7 +276,10 @@ export class WebGPUEngine {
         this.circleTrailPipeline = d.createRenderPipeline({
             layout: 'auto',
             vertex: { module: circleTrailModule, entryPoint: 'vs' },
-            fragment: { module: circleTrailModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm', blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one' }, alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one' } } }] },
+            // Normal premultiplied-alpha blend (matches the Canvas 2D trail, which
+        // draws lines with source-over). Additive (one,one) blew the trail out to
+        // white in dense clusters because rgba8unorm clamps at 1.0.
+        fragment: { module: circleTrailModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm', blend: { color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
             primitive: { topology: 'triangle-list' },
         });
 

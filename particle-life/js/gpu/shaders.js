@@ -519,9 +519,15 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
     let worldPos = vec2f(p.x, p.y) + c * ti.size;
 
     // World -> NDC over the world-sized trail texture (no camera).
+    // NOTE the Y flip (1.0 - ...) so the trail texture is stored in the same
+    // top-left, y-down orientation as the world/canvas. COMPOSITE reads it back
+    // with uv = worldPos/(worldW,worldH) (no flip) and the screen-space
+    // particles (CIRCLE) are also y-flipped. Without this flip the trail is
+    // stored vertically mirrored and appears as a mirrored ghost behind the
+    // correctly-oriented particles.
     out.pos = vec4f(
         worldPos.x * (2.0 / camera.worldW) - 1.0,
-        worldPos.y * (2.0 / camera.worldH) - 1.0,
+        1.0 - worldPos.y * (2.0 / camera.worldH),
         0.0, 1.0);
     out.offset = c;
     out.color = vec4f(ti.r, ti.g, ti.b, 1.0);
