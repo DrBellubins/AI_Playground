@@ -158,9 +158,11 @@ export class WebGPUEngine {
         const w = Math.floor(canvas.clientWidth * dpr) || 800;
         const h = Math.floor(canvas.clientHeight * dpr) || 600;
 
-        // Trail texture at device resolution (matches canvas backing store)
-        this.trailW = w;
-        this.trailH = h;
+        // Trail texture supersampled relative to world size for zoom headroom.
+        // 4 px per world unit → crisp up to 4× zoom on 1× displays, 2× on retina.
+        const TRAIL_SS = 4;
+        this.trailW = Math.max(1, Math.round(canvas.clientWidth * TRAIL_SS));
+        this.trailH = Math.max(1, Math.round(canvas.clientHeight * TRAIL_SS));
 
         const trailDesc = {
             size: [this.trailW, this.trailH],
@@ -189,8 +191,9 @@ export class WebGPUEngine {
         const dpr = window.devicePixelRatio || 1;
         this.canvasW = Math.floor(canvas.clientWidth * dpr) || 800;
         this.canvasH = Math.floor(canvas.clientHeight * dpr) || 600;
-        this.trailW = this.canvasW;
-        this.trailH = this.canvasH;
+        const TRAIL_SS = 4;
+        this.trailW = Math.max(1, Math.round(canvas.clientWidth * TRAIL_SS));
+        this.trailH = Math.max(1, Math.round(canvas.clientHeight * TRAIL_SS));
 
         if (this.trailTexA) {
             this.trailTexA.destroy();
