@@ -158,9 +158,9 @@ export class WebGPUEngine {
         const w = Math.floor(canvas.clientWidth * dpr) || 800;
         const h = Math.floor(canvas.clientHeight * dpr) || 600;
 
-        // Use logical resolution for trail (saves memory, visually identical for fading trails)
-        this.trailW = Math.max(1, canvas.clientWidth);
-        this.trailH = Math.max(1, canvas.clientHeight);
+        // Trail texture at device resolution (matches canvas backing store)
+        this.trailW = w;
+        this.trailH = h;
 
         const trailDesc = {
             size: [this.trailW, this.trailH],
@@ -189,8 +189,8 @@ export class WebGPUEngine {
         const dpr = window.devicePixelRatio || 1;
         this.canvasW = Math.floor(canvas.clientWidth * dpr) || 800;
         this.canvasH = Math.floor(canvas.clientHeight * dpr) || 600;
-        this.trailW = Math.max(1, canvas.clientWidth);
-        this.trailH = Math.max(1, canvas.clientHeight);
+        this.trailW = this.canvasW;
+        this.trailH = this.canvasH;
 
         if (this.trailTexA) {
             this.trailTexA.destroy();
