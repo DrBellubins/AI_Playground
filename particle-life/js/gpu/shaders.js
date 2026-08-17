@@ -5,6 +5,12 @@
  * Render:  trailFade, circle, glow, composite, lineSimple, deathFX
  */
 
+// Bump this on any WGSL change so you can confirm a fresh module actually loaded
+// (browsers/dev servers can serve a stale shaders.js while webgpu-engine.js updates).
+// If the trail mirror persists, check the console for this line — if it's missing,
+// the tab is running old shader code: hard-refresh (Ctrl/Cmd+Shift+R).
+console.info('[shaders.js] v2 — trail NDC y-flip applied (1 - 2y/H)');
+
 // ====== Common types ======
 const COMMON = /* wgsl */`
 struct Particle {
