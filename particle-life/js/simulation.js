@@ -66,6 +66,8 @@ export class Simulation {
     this.reproEnergy = 0.8;    // min energy to split
     this.maxParticles = 5000;  // population cap
     this.reproCooldown = 5;    // seconds before a particle can split again
+    this.autoReseed = true;        // auto-reset with a fresh seed when population < threshold
+    this.autoReseedThreshold = 200; // population floor that triggers an auto-reseed
     this.births = 0;
     this.deaths = 0;
     this.deathFx = [];
@@ -1033,6 +1035,26 @@ export class Simulation {
     // ---- GPU: age CPU-side death FX once per frame (spawns come from readback) ----
     if (this.gpu && this.lifeEnabled && steps > 0) this.updateDeathFx(this.fixedDt);
 
+    // ---- Auto-reseed ----
+    // When the population collapses below the threshold, re-init with a fresh
+    // random seed. All settings (types, matrix, life params, visuals) are
+    // untouched — initParticles() only re-scatters the particle population,
+    // and it re-uploads the new state on the GPU path too.
+    // The floor is clamped below totalParticles so a misconfigured threshold
+    // can never cause a reseed-every-frame loop.
+    if (this.autoReseed) {
+      const floor = Math.min(this.autoReseedThreshold, this.totalParticles - 1);
+      if (this.particles.length < floor) {
+        const count = this.particles.length;
+        const oldSeed = this.seed;
+        this.seed = Math.floor(Math.random() * 99999);
+        this.initParticles();
+        console.log(`[particle-life] population ${count} < ${floor} → auto-reseeded ${oldSeed} → ${this.seed}`);
+        // Refresh the overlay (seed label, particle count) immediately.
+        if (globalThis.ui) globalThis.ui.updateStats();
+      }
+    }
+
     this.render();
 
     // ---- GPU: kick off async readback of this frame's particle state ----
@@ -1064,6 +1086,8 @@ export class Simulation {
       bgColor: this.bgColor,
       showVectors: this.showVectors,
       showGrid: this.showGrid,
+      autoReseed: this.autoReseed,
+      autoReseedThreshold: this.autoReseedThreshold,
       types: this.types.map(t => ({ ...t })),
       matrix: this.matrix.map(r => [...r]),
       soundEnabled: this.soundEnabled ?? false,
@@ -1093,6 +1117,8 @@ export class Simulation {
     if (cfg.bgColor !== undefined) this.bgColor = cfg.bgColor;
     if (cfg.showVectors !== undefined) this.showVectors = cfg.showVectors;
     if (cfg.showGrid !== undefined) this.showGrid = cfg.showGrid;
+    if (cfg.autoReseed !== undefined) this.autoReseed = cfg.autoReseed;
+    if (cfg.autoReseedThreshold !== undefined) this.autoReseedThreshold = +cfg.autoReseedThreshold;
     if (cfg.life) {
       if (cfg.life.enabled !== undefined) this.lifeEnabled = cfg.life.enabled;
       if (cfg.life.energyDecay !== undefined) this.energyDecay = +cfg.life.energyDecay;

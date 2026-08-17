@@ -97,6 +97,12 @@ export class UIController {
     this.bind('s-maxp', 'v-maxp', v => { this.sim.maxParticles = +v; });
     this.bind('s-cooldown', 'v-cooldown', v => { this.sim.reproCooldown = +v; });
 
+    // Auto-reseed
+    document.getElementById('c-autoreseed').addEventListener('change', e => {
+      this.sim.autoReseed = e.target.checked;
+    });
+    this.bind('s-autoreseed', 'v-autoreseed', v => { this.sim.autoReseedThreshold = +v; });
+
     // Preset buttons
     document.querySelectorAll('[data-preset]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -361,6 +367,7 @@ export class UIController {
     document.getElementById('v-damping').textContent = this.sim.damping.toFixed(3);
     document.getElementById('s-seed').value = this.sim.seed;
     document.getElementById('v-seed').textContent = this.sim.seed;
+    this._lastSeedShown = this.sim.seed;
     document.getElementById('s-trail').value = this.sim.trail;
     document.getElementById('v-trail').textContent = this.sim.trail;
     document.getElementById('c-glow').checked = this.sim.glow;
@@ -388,6 +395,9 @@ export class UIController {
     document.getElementById('v-maxp').textContent = this.sim.maxParticles;
     document.getElementById('s-cooldown').value = this.sim.reproCooldown;
     document.getElementById('v-cooldown').textContent = this.sim.reproCooldown;
+    document.getElementById('c-autoreseed').checked = this.sim.autoReseed;
+    document.getElementById('s-autoreseed').value = this.sim.autoReseedThreshold;
+    document.getElementById('v-autoreseed').textContent = this.sim.autoReseedThreshold;
 
     this.syncTypeListDOM();
     this.buildMatrix();
@@ -406,6 +416,14 @@ export class UIController {
   }
 
   updateStats() {
+    // Keep the seed slider/label in sync when the seed changes outside the UI
+    // (e.g. an auto-reseed), so the fresh seed is visible immediately.
+    if (this.sim.seed !== this._lastSeedShown) {
+      this._lastSeedShown = this.sim.seed;
+      document.getElementById('s-seed').value = this.sim.seed;
+      document.getElementById('v-seed').textContent = this.sim.seed;
+    }
+
     // Show the timescale when it has degraded below real time (e.g. "0.5x"),
     // so it's visible that the sim slowed instead of the frame rate dropping.
     const ts = this.sim.timescale;

@@ -195,4 +195,46 @@ console.log('== TEST 2: GPU path (fake engine) ==');
 }
 
 // =====================================================================
+console.log('== TEST 3: auto-reseed on population collapse ==');
+{
+  const canvas = makeCanvas();
+  const sim = new Simulation(canvas);
+  await tick(); // let _initContext settle (CPU → synchronous)
+  assert.ok(sim._contextReady, 'context ready');
+
+  sim.autoReseed = true;
+  sim.autoReseedThreshold = 500;
+  sim.start();
+  await pumpRaf(5);
+
+  const seedBefore = sim.seed;
+  const countBefore = sim.particles.length;
+  assert.ok(countBefore >= sim.autoReseedThreshold,
+    `healthy population (${countBefore}) should NOT trigger reseed`);
+  assert.strictEqual(sim.seed, seedBefore, 'no reseed while population is healthy');
+
+  // Simulate a collapse below the threshold.
+  sim.particles.length = 400;
+  await pumpRaf(5);
+  assert.notStrictEqual(sim.seed, seedBefore, 'seed changed after collapse below threshold');
+  assert.ok(sim.particles.length >= sim.totalParticles,
+    `population rebuilt out of the collapse (now ${sim.particles.length})`);
+
+  // No reseed loop: seed must stay stable while the population recovers.
+  const seedAfter = sim.seed;
+  await pumpRaf(30);
+  assert.strictEqual(sim.seed, seedAfter, 'no reseed loop after re-init');
+  console.log('   auto-reseed: healthy=', countBefore,
+              '→ collapsed to 400 → reseeded', seedBefore, '→', sim.seed, 'OK');
+
+  // Misconfigured threshold (>= totalParticles) must not loop. (Life off so
+  // natural deaths can't drop the population below the clamped floor.)
+  sim.lifeEnabled = false;
+  sim.autoReseedThreshold = 100000;
+  await pumpRaf(10);
+  assert.strictEqual(sim.seed, seedAfter, 'threshold >= totalParticles never triggers');
+  console.log('   auto-reseed: no loop with oversized threshold OK');
+}
+
+// =====================================================================
 console.log('\nALL TESTS PASSED');
