@@ -52,7 +52,10 @@ export class Simulation {
     this.bgColor = '#050508';
     this.showVectors = false;
     this.showGrid = false;
-    this.wrap = false;
+    // Edge behavior: when a particle leaves the canvas it teleports to the
+    // opposite angle (see wrapTorus / shader wrapOn branch) instead of
+    // bouncing. ON by default so the WebGPU and CPU backends match.
+    this.wrap = true;
 
     // Life cycle (reproduction & death) — see lifeStep()
     this.lifeEnabled = true;
