@@ -9,7 +9,7 @@
 // (browsers/dev servers can serve a stale shaders.js while webgpu-engine.js updates).
 // If the trail mirror persists, check the console for this line — if it's missing,
 // the tab is running old shader code: hard-refresh (Ctrl/Cmd+Shift+R).
-console.info('[shaders.js] v3 — opposite-angle (central) edge wrap');
+console.info('[shaders.js] v4 — FS_QUAD_VS screen-aligned UV (trail fade Y-flip fix)');
 
 // ====== Common types ======
 const COMMON = /* wgsl */`
@@ -73,7 +73,11 @@ fn vs(@builtin(vertex_index) vid: u32) -> VertexOut {
     )[vid];
     var out: VertexOut;
     out.pos = vec4f(pos, 0.0, 1.0);
-    out.uv = (pos + 1.0) * 0.5;
+    // Screen-aligned UV: NDC y=+1 is the TOP of the viewport, but texture v=0
+    // is the top row — so v must be inverted. Without this, the trail-fade pass
+    // copies the previous frame's trail vertically mirrored (the "mirrored
+    // ghost in the bottom half" bug).
+    out.uv = vec2f((pos.x + 1.0) * 0.5, 1.0 - (pos.y + 1.0) * 0.5);
     return out;
 }
 `;
