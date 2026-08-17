@@ -9,7 +9,7 @@
 // (browsers/dev servers can serve a stale shaders.js while webgpu-engine.js updates).
 // If the trail mirror persists, check the console for this line — if it's missing,
 // the tab is running old shader code: hard-refresh (Ctrl/Cmd+Shift+R).
-console.info('[shaders.js] v2 — trail NDC y-flip applied (1 - 2y/H)');
+console.info('[shaders.js] v3 — opposite-angle (central) edge wrap');
 
 // ====== Common types ======
 const COMMON = /* wgsl */`
@@ -307,10 +307,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var nprevY = p.prevY;
 
     if (wrapOn) {
-        if (nx < 0.0) { nx += worldW; nprevX += worldW; }
-        else if (nx >= worldW) { nx -= worldW; nprevX -= worldW; }
-        if (ny < 0.0) { ny += worldH; nprevY += worldH; }
-        else if (ny >= worldH) { ny -= worldH; nprevY -= worldH; }
+        // "Opposite angle" wrap. Instead of a plain torus axis-wrap
+        // (left->right at the SAME y, top->bottom at the SAME x), reflect the
+        // particle through the canvas CENTER. The canvas center defines a
+        // circle; a point at angle θ around it re-enters at θ + 180° — the
+        // diametrically-opposite edge/corner. A rectangle is centrally
+        // symmetric, so reflecting an out-of-bounds point through the center
+        // lands on the opposite boundary. The circle only sets the angle; the
+        // rectangle is still the actual canvas. Velocity is left unchanged:
+        // central symmetry turns the outward velocity at the exit edge into
+        // the inward velocity at the re-entry edge, so the exit angle is
+        // preserved. The 0.5px inset keeps the re-entering particle strictly
+        // inside so it cannot re-trigger the boundary next frame.
+        const EPS = 0.5;
+        if (nx < 0.0 || nx >= worldW || ny < 0.0 || ny >= worldH) {
+            nx = clamp(worldW - nx, EPS, worldW - EPS);
+            ny = clamp(worldH - ny, EPS, worldH - EPS);
+            nprevX = clamp(worldW - nprevX, EPS, worldW - EPS);
+            nprevY = clamp(worldH - nprevY, EPS, worldH - EPS);
+        }
     } else {
         if (nx < 0.0) { nx = 0.0; nvx = -nvx; }
         else if (nx >= worldW) { nx = worldW; nvx = -nvx; }

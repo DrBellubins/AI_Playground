@@ -404,56 +404,45 @@ export class Simulation {
     }
   }
 
-  /* ---- Torus wrapping (corner-aware) ---- */
+  /* ---- Edge wrapping (opposite-angle / central) ---- */
   /**
-   * Wrap a particle back into the world after it moved out of bounds.
+   * Wrap a particle back into the world after it moved out of bounds, using
+   * the "opposite angle" rule.
    *
-   * Straight exits: crossing an edge teleports the particle to the
-   * directly opposite point (same distance from the opposite edge, same
-   * direction of travel), e.g. left edge -> right edge.
+   * The canvas center defines a circle. A particle that leaves the canvas at
+   * angle θ (measured around that center) re-enters at θ + 180° — the
+   * diametrically-opposite edge/corner. Concretely this is a point reflection
+   * of the position through the center: newPos = 2*center - pos.
    *
-   * Corner exits: if a particle crosses one edge while it is within a
-   * few frames of travel of the adjacent edge (i.e. it is really
-   * leaving through a corner), the adjacent axis is mirrored to the
-   * opposite side in the same step. That makes a corner exit a single
-   * teleport to the opposite corner with the exit angle preserved,
-   * instead of two separate axis-aligned jumps a few frames apart.
+   * A rectangle is centrally symmetric, so reflecting an out-of-bounds point
+   * through the center lands exactly on the opposite boundary. The circle only
+   * decides the opposite angle; the rectangle is still the actual canvas. This
+   * replaces the older velocity-based corner look-ahead with one complete rule
+   * shared with the WebGPU shader (COMPUTE_ALL wrapOn branch), so both backends
+   * behave identically.
    *
-   * prevX/prevY are transformed with the same mapping so the trail
-   * segment stays short and is drawn at the new location.
+   * This is NOT a plain torus axis-wrap (left -> right at the same y). For a
+   * straight edge exit it reaches the truly opposite angle (mirrored second
+   * axis) on every exit, not only when a corner is detected.
+   *
+   * Velocity is left unchanged: central symmetry turns the outward exit
+   * velocity into the inward re-entry velocity, so the exit angle/direction is
+   * preserved. prevX/prevY are reflected the same way so the trail segment
+   * stays short and is drawn at the new location. A 0.5px inset keeps the
+   * particle strictly inside so it cannot re-trigger the boundary.
    */
   wrapTorus(p) {
     const w = this.w, h = this.h;
-    const MIN_LA = 2;  // px — minimum corner look-ahead distance
-    const MAX_LA = 10; // px — maximum corner look-ahead distance
-    const FRAMES = 4;  // travel within this many frames = "at the corner"
+    const EPS = 0.5; // keep the re-entering particle strictly inside
 
-    let wrappedX = false, wrappedY = false;
+    // Only act on a genuine exit (any coordinate outside the rectangle).
+    if (p.x >= 0 && p.x < w && p.y >= 0 && p.y < h) return;
 
-    if (p.x < 0) { p.x += w; p.prevX += w; wrappedX = true; }
-    else if (p.x >= w) { p.x -= w; p.prevX -= w; wrappedX = true; }
-    if (p.y < 0) { p.y += h; p.prevY += h; wrappedY = true; }
-    else if (p.y >= h) { p.y -= h; p.prevY -= h; wrappedY = true; }
-
-    // Exactly one axis crossed an edge this frame (an exit event). If
-    // the particle is also about to cross the adjacent edge, mirror it
-    // to the opposite side right now: one corner-to-corner teleport.
-    if (wrappedX !== wrappedY) {
-      if (p.vx > 0) {
-        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * p.vx));
-        if (p.x > w - la) { p.x = w - p.x; p.prevX = w - p.prevX; }
-      } else if (p.vx < 0) {
-        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * -p.vx));
-        if (p.x < la) { p.x = w - p.x; p.prevX = w - p.prevX; }
-      }
-      if (p.vy > 0) {
-        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * p.vy));
-        if (p.y > h - la) { p.y = h - p.y; p.prevY = h - p.prevY; }
-      } else if (p.vy < 0) {
-        const la = Math.min(MAX_LA, Math.max(MIN_LA, FRAMES * -p.vy));
-        if (p.y < la) { p.y = h - p.y; p.prevY = h - p.prevY; }
-      }
-    }
+    // Reflect the position (and trail prev) through the canvas center.
+    p.x = Math.min(Math.max(w - p.x, EPS), w - EPS);
+    p.y = Math.min(Math.max(h - p.y, EPS), h - EPS);
+    p.prevX = Math.min(Math.max(w - p.prevX, EPS), w - EPS);
+    p.prevY = Math.min(Math.max(h - p.prevY, EPS), h - EPS);
   }
 
   /* ---- Life cycle: energy, death, reproduction ---- */
