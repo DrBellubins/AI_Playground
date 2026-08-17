@@ -9,7 +9,7 @@
 // (browsers/dev servers can serve a stale shaders.js while webgpu-engine.js updates).
 // If the trail mirror persists, check the console for this line — if it's missing,
 // the tab is running old shader code: hard-refresh (Ctrl/Cmd+Shift+R).
-console.info('[shaders.js] v3 — opposite-angle (central) edge wrap');
+console.info('[shaders.js] v4 — trail midpoint (no current-pos stamp)');
 
 // ====== Common types ======
 const COMMON = /* wgsl */`
@@ -537,7 +537,9 @@ fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -> Ver
 
     let c = corners[vid];
     let ti = typeInfo[u32(p.ptype)];
-    let worldPos = vec2f(p.x, p.y) + c * ti.size;
+    // Draw at midpoint between prev and current so the trail texture doesn't
+    // duplicate the current position (which is rendered crisply by the CIRCLE pass).
+    let worldPos = vec2f((p.x + p.prevX) * 0.5, (p.y + p.prevY) * 0.5) + c * ti.size;
 
     // World -> NDC over the world-sized trail texture (no camera).
     // NOTE the Y flip (1.0 - ...) so the trail texture is stored in the same
